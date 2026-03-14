@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.curio.Curio</id>
+  <name>Curio</name>
+  <summary>A GUI Flatpak store</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <description>
+    <p>Curio is a GUI Flatpak store with search, install, update, and category browsing.</p>
+  </description>
+  <launchable type="desktop-id">io.github.curio.Curio.desktop</launchable>
+  <developer id="io.github.curio">
+    <name>Curio Contributors</name>
+  </developer>
+</component>

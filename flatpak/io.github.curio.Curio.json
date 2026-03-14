@@ -1,0 +1,41 @@
+{
+  "app-id": "io.github.curio.Curio",
+  "runtime": "org.kde.Platform",
+  "runtime-version": "6.8",
+  "sdk": "org.kde.Sdk",
+  "command": "curio",
+  "finish-args": [
+    "--share=network",
+    "--share=ipc",
+    "--socket=x11",
+    "--socket=wayland",
+    "--device=dri",
+    "--talk-name=org.freedesktop.Flatpak"
+  ],
+  "cleanup": [
+    "/include",
+    "/lib/pkgconfig",
+    "/share/pkgconfig",
+    "/share/man",
+    "*.la",
+    "*.a"
+  ],
+  "modules": [
+    {
+      "name": "curio",
+      "buildsystem": "cmake-ninja",
+      "builddir": true,
+      "sources": [
+        {
+          "type": "dir",
+          "path": ".."
+        }
+      ],
+      "post-install": [
+        "install -Dm644 resources/curio.desktop /app/share/applications/io.github.curio.Curio.desktop",
+        "install -Dm644 resources/icon.png /app/share/icons/hicolor/512x512/apps/io.github.curio.Curio.png",
+        "install -Dm644 resources/io.github.curio.Curio.metainfo.xml /app/share/metainfo/io.github.curio.Curio.metainfo.xml"
+      ]
+    }
+  ]
+}

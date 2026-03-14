@@ -1,0 +1,7 @@
+[Flatpak Ref]
+Title=Curio
+Name=io.github.curio.Curio
+Branch=stable
+Url=https://dl.flathub.org/repo/
+IsRuntime=false
+RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo

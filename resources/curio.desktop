@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Curio
+Comment=A GUI Flatpak store
+Exec=curio
+Icon=curio
+Categories=System;PackageManager;
+Terminal=false

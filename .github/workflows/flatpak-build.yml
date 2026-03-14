@@ -1,0 +1,43 @@
+name: Build Flatpak
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  flatpak:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Build Flatpak repo
+        run: |
+          flatpak-builder \
+            --force-clean \
+            --repo=repo \
+            --install-deps-from=flathub \
+            build-flatpak \
+            flatpak/io.github.curio.Curio.json
+
+      - name: Build bundle artifact
+        run: |
+          flatpak build-bundle repo curio.flatpak io.github.curio.Curio stable
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: curio-flatpak
+          path: |
+            curio.flatpak
+            flatpak/io.github.curio.Curio.json
+            flatpak/io.github.curio.Curio.flatpakref

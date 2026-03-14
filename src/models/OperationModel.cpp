@@ -1,0 +1,77 @@
+#include "OperationModel.h"
+
+OperationModel::OperationModel(QObject *parent)
+    : QAbstractListModel(parent)
+{
+}
+
+int OperationModel::rowCount(const QModelIndex &parent) const
+{
+    if (parent.isValid())
+        return 0;
+    return m_operations.size();
+}
+
+QVariant OperationModel::data(const QModelIndex &index, int role) const
+{
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_operations.size())
+        return {};
+
+    const Operation &op = m_operations.at(index.row());
+
+    if (role == Qt::DisplayRole) {
+        const QString action = (op.type == OperationType::Install)
+                ? QStringLiteral("Install")
+                : (op.type == OperationType::Uninstall)
+                  ? QStringLiteral("Uninstall")
+                  : QStringLiteral("Update");
+        const QString status = (op.status == OperationStatus::Running)
+                ? QStringLiteral("Running")
+                : (op.status == OperationStatus::Succeeded)
+                  ? QStringLiteral("Succeeded")
+                  : (op.status == OperationStatus::Failed)
+                    ? QStringLiteral("Failed")
+                    : QStringLiteral("Pending");
+        const QString detail = op.message.trimmed().isEmpty() ? QString() : QStringLiteral(" - %1").arg(op.message.trimmed());
+        return QStringLiteral("%1 %2 [%3]%4").arg(action, op.appId, status, detail);
+    }
+
+    switch (role) {
+    case AppIdRole:
+        return op.appId;
+    case AppNameRole:
+        return op.appName;
+    case TypeRole:
+        return static_cast<int>(op.type);
+    case StatusRole:
+        return static_cast<int>(op.status);
+    case ProgressRole:
+        return op.progress;
+    case MessageRole:
+        return op.message;
+    default:
+        return {};
+    }
+}
+
+QHash<int, QByteArray> OperationModel::roleNames() const
+{
+    QHash<int, QByteArray> roles;
+    roles[AppIdRole] = "appId";
+    roles[AppNameRole] = "appName";
+    roles[TypeRole] = "type";
+    roles[StatusRole] = "status";
+    roles[ProgressRole] = "progress";
+    roles[MessageRole] = "message";
+    return roles;
+}
+
+void OperationModel::addOrUpdate(const Operation &op)
+{
+    // Simple approach: append every operation; later we could de-duplicate by appId/type.
+    const int row = m_operations.size();
+    beginInsertRows(QModelIndex(), row, row);
+    m_operations.append(op);
+    endInsertRows();
+}
+
