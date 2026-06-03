@@ -6,123 +6,30 @@ This project is inspired by Bazaar, but it is a separate Qt application. It also
 
 It's an experiment.
 
-## Features 
+## Build
 
-- Browse installed Flatpak applications.
-- Search for applications via `flatpak search`.
-- View a basic operations list for recent actions.
-
-## Building
-
-Requirements:
-
-- C++17-capable compiler
-- CMake ≥ 3.16
-- Qt 6 (Widgets, Network, Concurrent modules)
-- **libflatpak** development package (`flatpak` / `libflatpak-dev` on Debian; `flatpak` on Arch provides pkg-config)
-- **Optional:** AppStream Qt (`appstream-qt` on Arch) for rich app metadata (long descriptions, screenshots). If not found, the app builds and runs with libflatpak data only. On Arch, the package does not ship pkg-config; CMake must find `AppStreamQt`. If detection fails, check the target name: `grep -E 'add_library|ALIAS' /usr/lib/cmake/AppStreamQt/*.cmake`.
-
-**Recommended workflow:** build and run Curio as a Flatpak (see [Releases (Flatpak)](#releases-flatpak)). Native builds are supported for development against the host libflatpak.
-
-Configure and build (native dev):
+You need a C++17 compiler, CMake 3.16+, Qt 6 (Widgets, Network, Concurrent), and libflatpak (`flatpak` / `libflatpak-dev`). AppStream Qt is optional — without it you still get names and icons from Flatpak, just less metadata.
 
 ```bash
 cmake -S . -B build -DCURIO_SANDBOXED_LIBFLATPAK=OFF
 cmake --build build
-```
-
-Run:
-
-```bash
 ./build/curio
 ```
 
-To install into `/usr/local/bin` (or your chosen prefix):
+## Screenshots
 
-```bash
-cmake --install build
-```
+![Curio browsing Flathub](screenshots/main_screen.png)
 
-## Releases (Flatpak)
+![Tracked builds in Settings](screenshots/tracked_apps_setting.png)
 
-CI builds a Flatpak bundle **only when a GitHub Release is published** (planned pre-releases or full releases). Pushes and pull requests do not build.
+## What it does
 
-For the first planned pre-release (`alpha_1`):
+Curio talks to Flatpak through **libflatpak** (not the `flatpak` CLI). Browse Flathub, search remotes, install and uninstall apps, and see what you already have installed.
 
-1. Push your changes to the default branch.
-2. Create a tag (for example `alpha_1`) pointing at that commit.
-3. On GitHub: **Releases → Draft a new release**, choose tag `alpha_1`, check **Set as a pre-release**, then **Publish release**.
-4. The workflow uploads to that release:
-   - `io.github.curio.Curio-x86_64.flatpak`
-   - `io.github.curio.Curio-x86_64.flatpak.sha256`
+**Tracked builds** watch Git repos (GitHub, GitLab, Codeberg) for release assets — useful when an app ships a `.flatpak` on GitHub but not on Flathub. You can link a repo, pick filters, and install or update from releases. API tokens in Settings help with GitHub rate limits and private repos.
 
-Install from a release asset:
+Pre-built Flatpak bundles for Curio itself are attached to [GitHub Releases](https://github.com/robojerk/Curio/releases) when published. Install with:
 
 ```bash
 flatpak install --user --bundle io.github.curio.Curio-x86_64.flatpak
 ```
-
-The bundle is built for **x86_64** today. **aarch64** is reserved in the workflow matrix for a later enablement.
-
-### Test the workflow with act (Podman)
-
-[act](https://github.com/nektos/act) uses the Docker API; Podman provides that via a socket (no Docker install needed).
-
-**Easiest:** run the helper script (bash — works from fish too):
-
-```bash
-./scripts/act-flatpak-release.sh
-```
-
-Enable a Podman API socket once. Your system unit listens on `/run/podman/podman.sock`; the user unit uses `$XDG_RUNTIME_DIR/podman/podman.sock`:
-
-```bash
-# rootless (typical)
-systemctl --user enable --now podman.socket
-
-# or rootful system socket
-sudo systemctl enable --now podman.socket
-```
-
-Check the socket: `podman ps` should succeed without errors.
-
-**Bash** — `export` must be on its own line (or use `env` on one line). Do not paste `export … act release …` as a single command:
-
-```bash
-export DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/podman/podman.sock"
-act release \
-  -e .github/events/release-published.json \
-  -W .github/workflows/flatpak-build.yml \
-  -P ubuntu-latest=ghcr.io/flathub-infra/flatpak-github-actions:kde-6.9 \
-  --container-options "--privileged"
-```
-
-One-liner (bash):
-
-```bash
-DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/podman/podman.sock" act release \
-  -e .github/events/release-published.json \
-  -W .github/workflows/flatpak-build.yml \
-  -P ubuntu-latest=ghcr.io/flathub-infra/flatpak-github-actions:kde-6.9 \
-  --container-options "--privileged"
-```
-
-**Fish** — no `${VAR}`; use `$XDG_RUNTIME_DIR`:
-
-```fish
-set -gx DOCKER_HOST unix://$XDG_RUNTIME_DIR/podman/podman.sock
-act release \
-  -e .github/events/release-published.json \
-  -W .github/workflows/flatpak-build.yml \
-  -P ubuntu-latest=ghcr.io/flathub-infra/flatpak-github-actions:kde-6.9 \
-  --container-options "--privileged"
-```
-
-Rootless Podman may need extra capabilities for `flatpak-builder` (namespaces). If the build fails inside act, re-run with `--privileged` as above, or use the rootful system socket.
-
-## Notes
-
-- Curio uses **libflatpak** (not the `flatpak` CLI) for listing, searching, and installing applications. When run inside its own Flatpak sandbox, it talks to `org.freedesktop.Flatpak.SystemHelper` for system-scope changes (one PolicyKit prompt per transaction).
-- Curio is a standalone GUI Flatpak store distributed via GitHub releases.
-
-
