@@ -2553,7 +2553,7 @@ void MainWindow::onTrackedBuildSelectionChanged()
                                           : project.lastError);
         }
         if (m_trackedEditButton)
-            m_trackedEditButton->setEnabled(!isBuiltin);
+            m_trackedEditButton->setEnabled(true);
         if (m_trackedRemoveButton)
             m_trackedRemoveButton->setEnabled(!isBuiltin);
         return;
@@ -2577,8 +2577,6 @@ void MainWindow::onTrackedBuildEdit()
     if (!m_trackedBuildsList || !m_trackedBuildsList->currentItem())
         return;
     const QString projectId = m_trackedBuildsList->currentItem()->data(Qt::UserRole).toString();
-    if (projectId == trackedBuildBuiltinCurioId())
-        return;
 
     TrackedBuildProject existing;
     for (const TrackedBuildProject &project : m_trackedBuildProjects) {

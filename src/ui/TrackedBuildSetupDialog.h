@@ -53,6 +53,7 @@ private:
     void applySuggestions(const TrackedBuildSuggestions &suggestions);
     void applyInstalledAppMatches(const ParsedGitRepo &repo);
     void populateFromProject(const TrackedBuildProject &project);
+    void applyBuiltInEditRestrictions();
     bool validateFields(QString *errorMessage) const;
     TrackedBuildProject buildProjectFromFields() const;
     bool finalizeProjectFromFields(TrackedBuildProject *project, QString *errorMessage) const;

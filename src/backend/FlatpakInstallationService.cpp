@@ -46,8 +46,8 @@ void FlatpakInstallationService::openInstallationPair(FlatpakScope scope,
     if (scope == FlatpakScope::User) {
         const QString home = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
         const QString userPath = home + QStringLiteral("/.local/share/flatpak");
-        g_autofree char *path = g_strdup(userPath.toUtf8().constData());
-        silent = flatpak_installation_new_for_path(path, TRUE, nullptr, &error);
+        g_autoptr(GFile) userInstall = g_file_new_for_path(userPath.toUtf8().constData());
+        silent = flatpak_installation_new_for_path(userInstall, TRUE, nullptr, &error);
     } else {
         silent = flatpak_installation_new_system(nullptr, &error);
     }

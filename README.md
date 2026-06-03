@@ -6,22 +6,6 @@ This project is inspired by Bazaar, but it is a separate Qt application. It also
 
 It's an experiment.
 
-## Build
-
-You need a C++17 compiler, CMake 3.16+, Qt 6 (Widgets, Network, Concurrent), and libflatpak (`flatpak` / `libflatpak-dev`). AppStream Qt is optional — without it you still get names and icons from Flatpak, just less metadata.
-
-```bash
-cmake -S . -B build -DCURIO_SANDBOXED_LIBFLATPAK=OFF
-cmake --build build
-./build/curio
-```
-
-## Screenshots
-
-![Curio browsing Flathub](screenshots/main_screen.png)
-
-![Tracked builds in Settings](screenshots/tracked_apps_setting.png)
-
 ## What it does
 
 Curio talks to Flatpak through **libflatpak** (not the `flatpak` CLI). Browse Flathub, search remotes, install and uninstall apps, and see what you already have installed.
@@ -32,4 +16,20 @@ Pre-built Flatpak bundles for Curio itself are attached to [GitHub Releases](htt
 
 ```bash
 flatpak install --user --bundle io.github.curio.Curio-x86_64.flatpak
+```
+
+## Screenshots
+
+![Curio browsing Flathub](screenshots/main_screen.png)
+
+![Tracked builds in Settings](screenshots/tracked_apps_setting.png)
+
+## Build
+
+You need a C++17 compiler, CMake 3.16+, Qt 6 (Widgets, Network, Concurrent), and libflatpak (`flatpak` / `libflatpak-dev`). AppStream Qt is optional — without it you still get names and icons from Flatpak, just less metadata.
+
+```bash
+cmake -S . -B build -DCURIO_SANDBOXED_LIBFLATPAK=OFF
+cmake --build build
+./build/curio
 ```

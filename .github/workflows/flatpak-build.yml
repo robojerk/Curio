@@ -1,7 +1,7 @@
 name: Build Flatpak
 
 # Published GitHub Releases only (pre-releases and full releases). Drafts do not run.
-# Test locally: act release -e .github/events/release-published.json
+# Test locally: ./research/scripts/act-flatpak-release.sh (workflow_dispatch; no release upload)
 on:
   release:
     types: [published]
@@ -68,7 +68,7 @@ jobs:
         run: sha256sum "${{ steps.meta.outputs.bundle }}" > "${{ steps.meta.outputs.bundle }}.sha256"
 
       - name: Upload to GitHub Release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' && env.ACT != 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -81,7 +81,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload workflow artifact
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && env.ACT != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: curio-flatpak-${{ matrix.arch }}

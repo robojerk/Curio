@@ -40,6 +40,39 @@
       ],
       "modules": [
         {
+          "name": "bubblewrap",
+          "buildsystem": "meson",
+          "config-opts": [
+            "-Dman=disabled",
+            "-Dselinux=disabled",
+            "-Dtests=false"
+          ],
+          "sources": [
+            {
+              "type": "git",
+              "url": "https://github.com/containers/bubblewrap",
+              "commit": "1b80120ef26a28e065e67f89bfef873f13bdd317",
+              "tag": "v0.11.2"
+            }
+          ]
+        },
+        {
+          "name": "xdg-dbus-proxy",
+          "buildsystem": "meson",
+          "config-opts": [
+            "-Dman=disabled",
+            "-Dtests=false"
+          ],
+          "sources": [
+            {
+              "type": "git",
+              "url": "https://github.com/flatpak/xdg-dbus-proxy",
+              "commit": "6a170fa77e3cbecb48f9dd2478fe5c0a119eb467",
+              "tag": "0.1.7"
+            }
+          ]
+        },
+        {
           "name": "flatpak",
           "buildsystem": "meson",
           "config-opts": [
@@ -51,7 +84,7 @@
             "-Dselinux_module=disabled",
             "-Dmalcontent=disabled",
             "-Dsandboxed_triggers=false",
-            "-Dsystem_helper=enabled",
+            "-Dsystem_helper=disabled",
             "-Dsystemd=disabled",
             "-Dsystem_install_dir=/var/lib/flatpak",
             "-Dsystem_bubblewrap=bwrap",
@@ -74,6 +107,116 @@
           ],
           "post-install": [
             "install -Dpm0755 -t /app/bin /usr/bin/update-{mime,desktop}-database"
+          ],
+          "modules": [
+            {
+              "name": "python3-pyparsing",
+              "buildsystem": "simple",
+              "cleanup": ["*"],
+              "build-commands": [
+                "pip3 install --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} pyparsing"
+              ],
+              "sources": [
+                {
+                  "type": "file",
+                  "url": "https://files.pythonhosted.org/packages/f3/91/9c6ee907786a473bf81c5f53cf703ba0957b23ab84c264080fb5a450416f/pyparsing-3.3.2.tar.gz",
+                  "sha256": "c777f4d763f140633dcb6d8a3eda953bf7a214dc4eff598413c070bcdc117cbc"
+                },
+                {
+                  "type": "file",
+                  "url": "https://files.pythonhosted.org/packages/69/59/b6fc2188dfc7ea4f936cd12b49d707f66a1cb7a1d2c16172963534db741b/flit_core-3.12.0.tar.gz",
+                  "sha256": "18f63100d6f94385c6ed57a72073443e1a71a4acb4339491615d0f16d6ff01b2"
+                }
+              ]
+            },
+            {
+              "name": "python3-babel",
+              "buildsystem": "simple",
+              "cleanup": ["*"],
+              "build-commands": [
+                "pip3 install --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} --no-build-isolation babel"
+              ],
+              "sources": [
+                {
+                  "type": "file",
+                  "url": "https://files.pythonhosted.org/packages/7d/b2/51899539b6ceeeb420d40ed3cd4b7a40519404f9baf3d4ac99dc413a834b/babel-2.18.0.tar.gz",
+                  "sha256": "b80b99a14bd085fcacfa15c9165f651fbb3406e66cc603abf11c5750937c992d"
+                }
+              ]
+            },
+            {
+              "name": "ostree",
+              "build-options": {
+                "env": {
+                  "BASH_COMPLETIONSDIR": "/app/share/bash-completion/completions"
+                },
+                "config-opts": [
+                  "--disable-man",
+                  "--enable-introspection=no",
+                  "--with-curl",
+                  "--without-libsystemd"
+                ]
+              },
+              "cleanup": [
+                "/bin",
+                "/etc/grub.d",
+                "/etc/ostree",
+                "/share/ostree",
+                "/libexec"
+              ],
+              "sources": [
+                {
+                  "type": "git",
+                  "url": "https://github.com/ostreedev/ostree",
+                  "tag": "v2026.1",
+                  "commit": "84fcfe17adcc69b926e8205782c1f735c09bfdd9"
+                }
+              ],
+              "modules": [
+                {
+                  "name": "libfuse",
+              "build-options": {
+                "env": {
+                  "MOUNT_FUSE_PATH": "../tmp/"
+                }
+              },
+              "config-opts": [
+                "UDEV_RULES_PATH=/app/etc/udev/rules.d",
+                "INIT_D_PATH=/app/etc/init.d"
+              ],
+              "cleanup": [
+                "/bin/ulockmgr_server",
+                "/etc"
+              ],
+              "post-install": [
+                "install -Dpm0755 ./fusermount-wrapper.sh /app/bin/fusermount"
+              ],
+              "sources": [
+                {
+                  "type": "archive",
+                  "url": "https://github.com/libfuse/libfuse/releases/download/fuse-2.9.9/fuse-2.9.9.tar.gz",
+                  "sha256": "d0e69d5d608cc22ff4843791ad097f554dd32540ddc9bed7638cc6fea7c1b4b5"
+                },
+                {
+                  "type": "patch",
+                  "path": "fuse-2.9.2-namespace-conflict-fix.patch"
+                },
+                {
+                  "type": "patch",
+                  "path": "fuse-disable-sys-mount-under-flatpak.patch"
+                },
+                {
+                  "type": "patch",
+                  "path": "fuse-2.9.2-closefrom.patch"
+                },
+                {
+                  "type": "file",
+                  "path": "fusermount-wrapper.sh"
+                }
+              ]
+                }
+              ]
+            }
           ],
           "sources": [
             {

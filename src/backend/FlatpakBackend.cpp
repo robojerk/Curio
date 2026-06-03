@@ -410,8 +410,8 @@ TrackedBuildProject defaultCurioTrackedBuildProject()
     project.repoSlug = trackedBuildBuiltinRepoSlug();
     project.linkedAppId = trackedBuildBuiltinLinkedAppId();
     project.trackStable = true;
-    project.trackNightly = false;
-    project.includePrereleases = false;
+    project.trackNightly = true;
+    project.includePrereleases = true;
     const QString arch = TrackedBuildClassifier::hostArchitectureToken();
     project.assetFilterRegex = QStringLiteral(R"(io\.github\.curio\.Curio-%1\.flatpak)")
             .arg(QRegularExpression::escape(arch));
@@ -1727,6 +1727,9 @@ void FlatpakBackend::upsertTrackedBuildProject(const TrackedBuildProject &incomi
         if (existing.id != project.id)
             continue;
         if (isBuiltin) {
+            existing.includePrereleases = project.includePrereleases;
+            existing.trackNightly = project.includePrereleases;
+            existing.trackStable = true;
             existing.latestStableVersion = project.latestStableVersion;
             existing.latestStablePublishedAtIso = project.latestStablePublishedAtIso;
             existing.latestStableAssetUrl = project.latestStableAssetUrl;

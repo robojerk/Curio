@@ -189,6 +189,8 @@ TrackedBuildSetupDialog::TrackedBuildSetupDialog(FlatpakBackend *backend,
 
     if (mode == Mode::Edit) {
         populateFromProject(existing);
+        if (existing.isBuiltIn())
+            applyBuiltInEditRestrictions();
         onFetchClicked();
     } else if (!hints.prefilledUrl.isEmpty()) {
         onFetchClicked();
@@ -239,6 +241,42 @@ void TrackedBuildSetupDialog::applyInstalledAppMatches(const ParsedGitRepo &repo
         m_matchedAppLabel->setText(tr("Multiple installed apps match this repository:"));
         m_matchedAppLabel->setVisible(true);
         m_matchedAppCombo->setVisible(true);
+    }
+}
+
+void TrackedBuildSetupDialog::applyBuiltInEditRestrictions()
+{
+    if (!m_project.isBuiltIn())
+        return;
+
+    const auto lockLine = [](QLineEdit *edit) {
+        if (!edit)
+            return;
+        edit->setReadOnly(true);
+        edit->setEnabled(false);
+    };
+    const auto lockCheck = [](QCheckBox *box) {
+        if (!box)
+            return;
+        box->setEnabled(false);
+    };
+
+    lockLine(m_linkedAppIdEdit);
+    lockLine(m_assetFilterRegexEdit);
+    lockLine(m_zippedFlatpakRegexEdit);
+    lockCheck(m_includeZipCheck);
+    lockCheck(m_autoArchCheck);
+    if (m_advancedGroup)
+        m_advancedGroup->setEnabled(false);
+
+    if (m_includePrereleasesCheck)
+        m_includePrereleasesCheck->setEnabled(true);
+
+    if (m_bannerLabel) {
+        m_bannerLabel->setText(
+                tr("Built-in entry for this app. Only “Include pre-releases” can be changed; other "
+                   "fields are fixed."));
+        m_bannerLabel->setVisible(true);
     }
 }
 
@@ -451,6 +489,19 @@ bool TrackedBuildSetupDialog::finalizeProjectFromFields(TrackedBuildProject *pro
 
     if (!validateFields(errorMessage))
         return false;
+
+    if (m_project.isBuiltIn()) {
+        *project = m_project;
+        project->includePrereleases = m_includePrereleasesCheck->isChecked();
+        project->trackStable = true;
+        project->trackNightly = project->includePrereleases;
+        if (!m_releases.isEmpty()) {
+            TrackedBuildClassifier::classifyReleases(*project, m_releases, project);
+            project->lastCheckedAtIso = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+            project->lastError.clear();
+        }
+        return true;
+    }
 
     *project = buildProjectFromFields();
     if (m_mode == Mode::Add) {
