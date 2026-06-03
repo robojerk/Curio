@@ -1,13 +1,18 @@
 #include "AppStreamProvider.h"
+#include "AppDisplayNames.h"
 
 #include <QDebug>
 #include <QDir>
+#include <QDirIterator>
+#include <QFile>
 #include <QSet>
 #include <QLocale>
 #include <QTextDocumentFragment>
 #include <QFileInfo>
 #include <QByteArray>
 #include <QUrl>
+#include <QElapsedTimer>
+#include <QXmlStreamReader>
 #include <limits>
 #include <memory>
 
@@ -45,6 +50,7 @@ QString proxyFlathubScreenshotUrl(const QUrl &url)
             .arg(QString::fromUtf8(encoded));
 }
 
+#ifdef HAVE_APPSTREAM_QT
 int scoreIconCandidate(const AppStream::Icon &icon)
 {
     int score = 0;
@@ -59,7 +65,55 @@ int scoreIconCandidate(const AppStream::Icon &icon)
     score += pixels;
     return score;
 }
+#endif
+
+QString findInstalledMetainfoPath(const QString &appId)
+{
+    if (appId.isEmpty())
+        return QString();
+    const QString fileName = appId + QStringLiteral(".metainfo.xml");
+    const QStringList roots = {
+        QDir::homePath() + QStringLiteral("/.local/share/flatpak/app/") + appId,
+        QStringLiteral("/var/lib/flatpak/app/") + appId,
+    };
+    for (const QString &root : roots) {
+        if (!QDir(root).exists())
+            continue;
+        QDirIterator it(root,
+                        QStringList{fileName},
+                        QDir::Files,
+                        QDirIterator::Subdirectories | QDirIterator::FollowSymlinks);
+        while (it.hasNext()) {
+            const QString path = it.next();
+            if (path.endsWith(QStringLiteral("/metainfo/") + fileName)
+                || path.endsWith(QStringLiteral("/appdata/") + fileName)) {
+                return path;
+            }
+        }
+    }
+    return QString();
 }
+
+void applyMetainfoUrl(AppInfo &info, const QString &type, const QString &url)
+{
+    const QString trimmed = url.trimmed();
+    if (trimmed.isEmpty())
+        return;
+    if (type == QLatin1String("homepage") && info.homepageUrl.isEmpty())
+        info.homepageUrl = trimmed;
+    else if (type == QLatin1String("vcs-browser") && info.vcsUrl.isEmpty())
+        info.vcsUrl = trimmed;
+    else if (type == QLatin1String("bugtracker") && info.bugtrackerUrl.isEmpty())
+        info.bugtrackerUrl = trimmed;
+    else if (type == QLatin1String("help") && info.helpUrl.isEmpty())
+        info.helpUrl = trimmed;
+    else if (type == QLatin1String("donation") && info.donateUrl.isEmpty())
+        info.donateUrl = trimmed;
+    else if (type == QLatin1String("translate") && info.translateUrl.isEmpty())
+        info.translateUrl = trimmed;
+}
+
+} // namespace
 
 AppStreamProvider::AppStreamProvider(QObject *parent)
     : QObject(parent)
@@ -85,6 +139,12 @@ bool AppStreamProvider::isAvailable() const
 }
 
 void AppStreamProvider::enrich(AppInfo &info) const
+{
+    enrichFromAppStreamPool(info);
+    enrichFromInstalledMetainfo(info);
+}
+
+void AppStreamProvider::enrichFromAppStreamPool(AppInfo &info) const
 {
 #ifdef HAVE_APPSTREAM_QT
     ensurePoolLoaded();
@@ -115,6 +175,16 @@ void AppStreamProvider::enrich(AppInfo &info) const
     }
 
     const AppStream::Component &comp = list.first();
+    if (info.name.isEmpty() || info.name == info.id) {
+        const QString compName = comp.name().trimmed();
+        if (!compName.isEmpty())
+            info.name = compName;
+    }
+    if (info.summary.isEmpty()) {
+        const QString compSummary = comp.summary().trimmed();
+        if (!compSummary.isEmpty())
+            info.summary = compSummary;
+    }
     if (info.longDescription.isEmpty()) {
         const QString desc = comp.description();
         if (!desc.isEmpty()) {
@@ -181,6 +251,11 @@ void AppStreamProvider::enrich(AppInfo &info) const
         const QUrl homepage = comp.url(AppStream::Component::UrlKindHomepage);
         if (!homepage.isEmpty())
             info.homepageUrl = homepage.toString();
+    }
+    if (info.vcsUrl.isEmpty()) {
+        const QUrl vcs = comp.url(AppStream::Component::UrlKindVcsBrowser);
+        if (!vcs.isEmpty())
+            info.vcsUrl = vcs.toString();
     }
     if (info.bugtrackerUrl.isEmpty()) {
         const QUrl bugtracker = comp.url(AppStream::Component::UrlKindBugtracker);
@@ -272,6 +347,99 @@ void AppStreamProvider::enrich(AppInfo &info) const
 #endif
 }
 
+void AppStreamProvider::enrichFromInstalledMetainfo(AppInfo &info) const
+{
+    if (info.id.isEmpty())
+        return;
+
+    const bool needsMore = info.name.isEmpty() || info.name == info.id
+            || info.summary.isEmpty()
+            || info.longDescription.isEmpty()
+            || info.homepageUrl.isEmpty()
+            || info.vcsUrl.isEmpty()
+            || info.bugtrackerUrl.isEmpty()
+            || info.helpUrl.isEmpty()
+            || info.screenshotUrls.isEmpty()
+            || info.developerName.isEmpty()
+            || info.projectLicense.isEmpty();
+    if (!needsMore)
+        return;
+
+    const QString path = findInstalledMetainfoPath(info.id);
+    if (path.isEmpty()) {
+        if (debugEnabled() && !m_loggedMisses.contains(info.id + QStringLiteral(":metainfo"))) {
+            qDebug() << "AppStreamProvider: no installed metainfo for" << info.id;
+            m_loggedMisses.insert(info.id + QStringLiteral(":metainfo"));
+        }
+        return;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+
+    QXmlStreamReader xml(&file);
+    bool inDescription = false;
+    QString descriptionBuffer;
+    QSet<QString> seenScreenshots;
+
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isEndElement() && xml.name() == QLatin1String("description"))
+            inDescription = false;
+
+        if (xml.isStartElement()) {
+            if (xml.name() == QLatin1String("developer_name") && info.developerName.isEmpty()) {
+                info.developerName = xml.readElementText().trimmed();
+            } else if (xml.name() == QLatin1String("project_license") && info.projectLicense.isEmpty()) {
+                info.projectLicense = xml.readElementText().trimmed();
+            } else if (xml.name() == QLatin1String("name")
+                       && (info.name.isEmpty() || info.name == info.id)) {
+                const QString parsedName = xml.readElementText().trimmed();
+                if (!parsedName.isEmpty())
+                    info.name = parsedName;
+            } else if (xml.name() == QLatin1String("summary") && info.summary.isEmpty()) {
+                info.summary = xml.readElementText().trimmed();
+            } else if (xml.name() == QLatin1String("url")) {
+                const QString type = xml.attributes().value(QLatin1String("type")).toString();
+                const QString url = xml.readElementText().trimmed();
+                applyMetainfoUrl(info, type, url);
+            } else if (xml.name() == QLatin1String("description")) {
+                inDescription = true;
+                descriptionBuffer.clear();
+            } else if (xml.name() == QLatin1String("image") && info.screenshotUrls.isEmpty()) {
+                const QString imageUrl = xml.readElementText().trimmed();
+                if (!imageUrl.isEmpty()) {
+                    const QString normalized = proxyFlathubScreenshotUrl(QUrl(imageUrl));
+                    const QString key = QUrl(normalized).toString(QUrl::RemoveQuery | QUrl::RemoveFragment);
+                    if (!seenScreenshots.contains(key)) {
+                        seenScreenshots.insert(key);
+                        info.screenshotUrls.append(normalized);
+                    }
+                }
+            } else if (xml.name() == QLatin1String("category") && info.categories.isEmpty()) {
+                const QString category = xml.readElementText().trimmed();
+                if (!category.isEmpty() && !info.categories.contains(category))
+                    info.categories.append(category);
+            }
+        } else if (inDescription && xml.isCharacters() && !xml.isWhitespace()) {
+            descriptionBuffer += xml.text();
+        }
+    }
+
+    if (info.longDescription.isEmpty() && !descriptionBuffer.trimmed().isEmpty()) {
+        const QString plain = QTextDocumentFragment::fromHtml(descriptionBuffer).toPlainText().trimmed();
+        info.longDescription = plain.isEmpty() ? descriptionBuffer.trimmed() : plain;
+    }
+
+    if (debugEnabled()) {
+        qDebug() << "AppStreamProvider: metainfo fallback for" << info.id
+                 << "from" << path
+                 << "homepage=" << info.homepageUrl
+                 << "screenshots=" << info.screenshotUrls.size();
+    }
+}
+
 void AppStreamProvider::ensurePoolLoaded() const
 {
     if (m_poolTried)
@@ -279,6 +447,8 @@ void AppStreamProvider::ensurePoolLoaded() const
     m_poolTried = true;
 
 #ifdef HAVE_APPSTREAM_QT
+    QElapsedTimer timer;
+    timer.start();
     m_pool->pool = new AppStream::Pool();
     m_pool->pool->setLocale(QLocale().name());
     AppStream::Pool::Flags flags = AppStream::Pool::FlagNone;
@@ -302,7 +472,7 @@ void AppStreamProvider::ensurePoolLoaded() const
         delete m_pool->pool;
         m_pool->pool = nullptr;
     } else if (debugEnabled()) {
-        qDebug() << "AppStreamProvider: pool loaded successfully";
+        qDebug() << "AppStreamProvider: pool loaded successfully in" << timer.elapsed() << "ms";
     }
 #endif
 }

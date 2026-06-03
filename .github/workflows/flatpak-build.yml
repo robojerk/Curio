@@ -1,43 +1,91 @@
 name: Build Flatpak
 
+# Published GitHub Releases only (pre-releases and full releases). Drafts do not run.
+# Test locally: act release -e .github/events/release-published.json
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Version / Flatpak branch (e.g. v0.1.0, alpha_1, stable)
+        required: false
+        default: stable
+
+permissions:
+  contents: write
 
 jobs:
   flatpak:
+    name: Flatpak (${{ matrix.arch }})
     runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'release' && github.event.release.draft == false)
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:kde-6.9
+      options: --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+          # - arch: aarch64  # enable with QEMU when ready
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Flatpak tooling
+      - name: Set bundle metadata
+        id: meta
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder
-          sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          ARCH="${{ matrix.arch }}"
+          BUNDLE="io.github.curio.Curio-${ARCH}.flatpak"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+            echo "prerelease=${{ github.event.release.prerelease }}" >> "$GITHUB_OUTPUT"
+          else
+            TAG="${{ inputs.tag }}"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "arch=${ARCH}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "bundle=${BUNDLE}" >> "$GITHUB_OUTPUT"
+          echo "Building ${BUNDLE} for ${ARCH} (branch/tag: ${TAG})"
 
-      - name: Build Flatpak repo
-        run: |
-          flatpak-builder \
-            --force-clean \
-            --repo=repo \
-            --install-deps-from=flathub \
-            build-flatpak \
-            flatpak/io.github.curio.Curio.json
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: flatpak/io.github.curio.Curio.json
+          bundle: ${{ steps.meta.outputs.bundle }}
+          arch: ${{ matrix.arch }}
+          branch: ${{ steps.meta.outputs.tag }}
+          upload-artifact: false
+          cache-key: curio-${{ matrix.arch }}-${{ steps.meta.outputs.tag }}-${{ github.sha }}
 
-      - name: Build bundle artifact
-        run: |
-          flatpak build-bundle repo curio.flatpak io.github.curio.Curio stable
+      - name: Write checksum
+        run: sha256sum "${{ steps.meta.outputs.bundle }}" > "${{ steps.meta.outputs.bundle }}.sha256"
 
-      - name: Upload Flatpak artifact
+      - name: Upload to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.meta.outputs.bundle }}
+            ${{ steps.meta.outputs.bundle }}.sha256
+          fail_on_unmatched_files: true
+          make_latest: ${{ github.event.release.prerelease == false }}
+          overwrite_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload workflow artifact
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: curio-flatpak
+          name: curio-flatpak-${{ matrix.arch }}
           path: |
-            curio.flatpak
+            ${{ steps.meta.outputs.bundle }}
+            ${{ steps.meta.outputs.bundle }}.sha256
             flatpak/io.github.curio.Curio.json
-            flatpak/io.github.curio.Curio.flatpakref

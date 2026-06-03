@@ -16,8 +16,39 @@
 #include <QVBoxLayout>
 
 #include "backend/FlatpakBackend.h"
+#include "backend/FlatpakRemoteCatalog.h"
+#include "backend/TrackedBuildClassifier.h"
 
 namespace {
+
+bool isGithubHost(const QUrl &url)
+{
+    return url.isValid() && url.host().compare(QStringLiteral("github.com"), Qt::CaseInsensitive) == 0;
+}
+
+QString githubUrlForApp(const AppInfo &info)
+{
+    if (!info.vcsUrl.isEmpty()) {
+        const QUrl vcs(info.vcsUrl);
+        if (isGithubHost(vcs))
+            return info.vcsUrl;
+    }
+    if (!info.homepageUrl.isEmpty()) {
+        const QUrl home(info.homepageUrl);
+        if (isGithubHost(home))
+            return info.homepageUrl;
+    }
+    return QString();
+}
+
+bool isVersionOnlySummary(const AppInfo &info)
+{
+    if (info.summary.isEmpty() || info.version.isEmpty())
+        return false;
+    return info.summary == QObject::tr("Version %1").arg(info.version)
+            || info.summary == QStringLiteral("Version ") + info.version;
+}
+
 bool isReasonableIconShape(const QPixmap &pm)
 {
     if (pm.isNull() || pm.width() <= 0 || pm.height() <= 0)
@@ -78,8 +109,11 @@ AppDetailsWidget::AppDetailsWidget(FlatpakBackend *backend, QWidget *parent)
     m_developerLabel->setStyleSheet(QStringLiteral("color: gray;"));
     m_licenseLabel = new QLabel(this);
     m_licenseLabel->setStyleSheet(QStringLiteral("color: gray;"));
+    m_originLabel = new QLabel(this);
+    m_originLabel->setStyleSheet(QStringLiteral("color: gray;"));
     titlesLayout->addWidget(m_titleLabel);
     titlesLayout->addWidget(m_idLabel);
+    titlesLayout->addWidget(m_originLabel);
     titlesLayout->addWidget(m_developerLabel);
     titlesLayout->addWidget(m_licenseLabel);
     titlesLayout->setSpacing(2);
@@ -187,6 +221,14 @@ void AppDetailsWidget::setApp(const AppInfo &info)
     m_idLabel->setText(info.version.isEmpty()
                            ? info.id
                            : QStringLiteral("%1 • %2").arg(info.id, info.version));
+    const QString originName = FlatpakRemoteCatalog::displayNameForOrigin(info.repoId);
+    if (!originName.isEmpty()) {
+        m_originLabel->setText(tr("Installed from: %1").arg(originName));
+        m_originLabel->setVisible(true);
+    } else {
+        m_originLabel->clear();
+        m_originLabel->setVisible(false);
+    }
     m_developerLabel->setText(info.developerName.isEmpty()
                                   ? QString()
                                   : QStringLiteral("By %1").arg(info.developerName));
@@ -196,13 +238,33 @@ void AppDetailsWidget::setApp(const AppInfo &info)
                                 : QStringLiteral("License: %1").arg(info.projectLicense));
     m_licenseLabel->setVisible(!info.projectLicense.isEmpty());
 
-    const QString description = info.longDescription.isEmpty() ? info.summary : info.longDescription;
+    QString description = info.longDescription;
+    if (description.isEmpty() && !isVersionOnlySummary(info))
+        description = info.summary;
     m_summaryLabel->setText(description);
 
     QStringList links;
-    if (!info.homepageUrl.isEmpty())
-        links << QStringLiteral("<a href=\"%1\">Project Website</a>").arg(info.homepageUrl.toHtmlEscaped());
-    links << QStringLiteral("<a href=\"https://flathub.org/apps/%1\">Flathub Page</a>").arg(info.id.toHtmlEscaped());
+    const QString githubUrl = githubUrlForApp(info);
+    if (!githubUrl.isEmpty()) {
+        links << QStringLiteral("<a href=\"%1\">GitHub</a>").arg(githubUrl.toHtmlEscaped());
+    }
+    if (!info.homepageUrl.isEmpty() && info.homepageUrl != githubUrl) {
+        links << QStringLiteral("<a href=\"%1\">Project Website</a>")
+                       .arg(info.homepageUrl.toHtmlEscaped());
+    }
+    if (!info.vcsUrl.isEmpty() && info.vcsUrl != githubUrl && info.vcsUrl != info.homepageUrl) {
+        links << QStringLiteral("<a href=\"%1\">Source Repository</a>")
+                       .arg(info.vcsUrl.toHtmlEscaped());
+    }
+    const QString catalogUrl = FlatpakRemoteCatalog::catalogPageUrlForApp(info.repoId, info.id);
+    if (!catalogUrl.isEmpty()) {
+        const QString catalogLabel = FlatpakRemoteCatalog::catalogPageLabelForOrigin(info.repoId);
+        links << QStringLiteral("<a href=\"%1\">%2</a>")
+                     .arg(catalogUrl.toHtmlEscaped(), catalogLabel.toHtmlEscaped());
+    } else if (!info.remoteRepoUrl.isEmpty()) {
+        links << QStringLiteral("<a href=\"%1\">Repository</a>")
+                     .arg(info.remoteRepoUrl.toHtmlEscaped());
+    }
     if (!info.bugtrackerUrl.isEmpty())
         links << QStringLiteral("<a href=\"%1\">Issue Tracker</a>").arg(info.bugtrackerUrl.toHtmlEscaped());
     if (!info.helpUrl.isEmpty())
@@ -211,6 +273,14 @@ void AppDetailsWidget::setApp(const AppInfo &info)
         links << QStringLiteral("<a href=\"%1\">Donate</a>").arg(info.donateUrl.toHtmlEscaped());
     if (!info.translateUrl.isEmpty())
         links << QStringLiteral("<a href=\"%1\">Translate</a>").arg(info.translateUrl.toHtmlEscaped());
+    if (!info.trackedStableAssetUrl.isEmpty()) {
+        links << QStringLiteral("<a href=\"%1\">Tracked Release Build</a>")
+                     .arg(info.trackedStableAssetUrl.toHtmlEscaped());
+    }
+    if (!info.trackedNightlyAssetUrl.isEmpty()) {
+        links << QStringLiteral("<a href=\"%1\">Tracked Pre-release Build</a>")
+                     .arg(info.trackedNightlyAssetUrl.toHtmlEscaped());
+    }
 
     if (links.isEmpty()) {
         m_linksView->setVisible(false);
@@ -220,10 +290,46 @@ void AppDetailsWidget::setApp(const AppInfo &info)
     }
 
     if (info.categories.isEmpty()) {
-        m_tagsLabel->setVisible(false);
+        if (!info.trackedStableVersion.isEmpty() || !info.trackedNightlyVersion.isEmpty()) {
+            QStringList trackedLines;
+            if (!info.trackedStableVersion.isEmpty()) {
+                trackedLines << tr("Release: %1 (%2)")
+                                .arg(info.trackedStableVersion,
+                                     info.trackedStablePublishedAtIso.isEmpty() ? tr("date unknown")
+                                                                                 : info.trackedStablePublishedAtIso);
+            }
+            if (!info.trackedNightlyVersion.isEmpty()) {
+                trackedLines << tr("Pre-release: %1 (%2)")
+                                .arg(info.trackedNightlyVersion,
+                                     info.trackedNightlyPublishedAtIso.isEmpty() ? tr("date unknown")
+                                                                                  : info.trackedNightlyPublishedAtIso);
+            }
+            if (!info.trackedBuildLastError.isEmpty())
+                trackedLines << tr("Tracked feed error: %1").arg(info.trackedBuildLastError);
+            m_tagsLabel->setText(trackedLines.join(QStringLiteral("\n")));
+            m_tagsLabel->setVisible(true);
+        } else {
+            m_tagsLabel->setVisible(false);
+        }
     } else {
-        m_tagsLabel->setText(info.categories.join(QStringLiteral("   ")));
+        QString tagsText = info.categories.join(QStringLiteral("   "));
+        QStringList trackedLines;
+        if (!info.trackedStableVersion.isEmpty()) {
+            trackedLines << tr("Release: %1 (%2)")
+                            .arg(info.trackedStableVersion,
+                                 info.trackedStablePublishedAtIso.isEmpty() ? tr("date unknown")
+                                                                             : info.trackedStablePublishedAtIso);
+        }
+        if (!info.trackedNightlyVersion.isEmpty()) {
+            trackedLines << tr("Pre-release: %1 (%2)")
+                            .arg(info.trackedNightlyVersion,
+                                 info.trackedNightlyPublishedAtIso.isEmpty() ? tr("date unknown")
+                                                                              : info.trackedNightlyPublishedAtIso);
+        }
+        if (!trackedLines.isEmpty())
+            tagsText += QStringLiteral("\n") + trackedLines.join(QStringLiteral("\n"));
         m_tagsLabel->setVisible(true);
+        m_tagsLabel->setText(tagsText);
     }
 
     QIcon fallback = QIcon::fromTheme(QStringLiteral("application-x-executable"));
@@ -306,7 +412,7 @@ void AppDetailsWidget::setApp(const AppInfo &info)
 void AppDetailsWidget::onInstallClicked()
 {
     if (m_backend)
-        m_backend->install(m_info.id);
+        m_backend->install(m_info.id, m_info.repoId);
 }
 
 void AppDetailsWidget::onRemoveClicked()
@@ -318,7 +424,7 @@ void AppDetailsWidget::onRemoveClicked()
 void AppDetailsWidget::onUpdateClicked()
 {
     if (m_backend)
-        m_backend->update(m_info.id);
+        m_backend->update(m_info.id, m_info.version);
 }
 
 void AppDetailsWidget::onManageClicked()
@@ -330,5 +436,16 @@ void AppDetailsWidget::updateButtonStates()
 {
     m_installButton->setEnabled(!m_info.installed);
     m_removeButton->setEnabled(m_info.installed);
+    const bool trackedUpdate = m_info.installed
+            && !m_info.trackedStableAssetUrl.isEmpty()
+            && TrackedBuildClassifier::isReleaseNewerThanInstalled(m_info.version,
+                                                                   m_info.trackedStableVersion);
     m_updateButton->setEnabled(m_info.installed);
+    if (trackedUpdate && !m_info.trackedStableVersion.isEmpty()) {
+        m_updateButton->setText(tr("Update to %1").arg(m_info.trackedStableVersion));
+        m_updateButton->setToolTip(m_info.trackedStableAssetUrl);
+    } else {
+        m_updateButton->setText(tr("Update"));
+        m_updateButton->setToolTip(QString());
+    }
 }

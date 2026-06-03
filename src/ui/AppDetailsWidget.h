@@ -38,6 +38,7 @@ private:
     QLabel *m_titleLabel = nullptr;
     QLabel *m_summaryLabel = nullptr;
     QLabel *m_idLabel = nullptr;
+    QLabel *m_originLabel = nullptr;
     QLabel *m_developerLabel = nullptr;
     QLabel *m_licenseLabel = nullptr;
     QTextBrowser *m_linksView = nullptr;

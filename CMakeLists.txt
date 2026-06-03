@@ -10,7 +10,12 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Concurrent)
+
+option(CURIO_SANDBOXED_LIBFLATPAK "Build for Curio running inside its own Flatpak sandbox" OFF)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FLATPAK REQUIRED flatpak>=1.9)
 
 # Optional: AppStream Qt for rich metadata (description, screenshots). When not found, app works with CLI data only.
 set(HAVE_APPSTREAM_QT OFF)
@@ -52,7 +57,19 @@ set(SOURCES
     ${SRC_DIR}/models/AppListModel.cpp
     ${SRC_DIR}/models/OperationModel.cpp
     ${SRC_DIR}/backend/FlatpakBackend.cpp
+    ${SRC_DIR}/backend/FlatpakInstallationService.cpp
+    ${SRC_DIR}/backend/FlatpakRefMapper.cpp
+    ${SRC_DIR}/backend/FlatpakTransactionRunner.cpp
+    ${SRC_DIR}/backend/FlatpakRemoteCatalog.cpp
+    ${SRC_DIR}/backend/AppDisplayNames.cpp
+    ${SRC_DIR}/backend/FlathubApiClient.cpp
     ${SRC_DIR}/backend/AppStreamProvider.cpp
+    ${SRC_DIR}/backend/GitHost.cpp
+    ${SRC_DIR}/backend/TrackedBuildSource.cpp
+    ${SRC_DIR}/backend/TrackedBuildClassifier.cpp
+    ${SRC_DIR}/backend/CurioSettings.cpp
+    ${SRC_DIR}/backend/TrackedBuildMatcher.cpp
+    ${SRC_DIR}/ui/TrackedBuildSetupDialog.cpp
 )
 
 set(HEADERS
@@ -62,11 +79,26 @@ set(HEADERS
     ${SRC_DIR}/ui/AppCardWidget.h
     ${SRC_DIR}/ui/InstalledRowWidget.h
     ${SRC_DIR}/models/AppInfo.h
+    ${SRC_DIR}/models/StoreTemplate.h
+    ${SRC_DIR}/models/TrackedBuild.h
     ${SRC_DIR}/models/AppListModel.h
     ${SRC_DIR}/models/Operation.h
     ${SRC_DIR}/models/OperationModel.h
     ${SRC_DIR}/backend/FlatpakBackend.h
+    ${SRC_DIR}/backend/FlatpakInstallationService.h
+    ${SRC_DIR}/backend/FlatpakRefMapper.h
+    ${SRC_DIR}/backend/FlatpakScope.h
+    ${SRC_DIR}/backend/FlatpakGlibInclude.h
+    ${SRC_DIR}/backend/FlatpakTransactionRunner.h
+    ${SRC_DIR}/backend/FlatpakRemoteCatalog.h
+    ${SRC_DIR}/backend/FlathubApiClient.h
     ${SRC_DIR}/backend/AppStreamProvider.h
+    ${SRC_DIR}/backend/GitHost.h
+    ${SRC_DIR}/backend/TrackedBuildSource.h
+    ${SRC_DIR}/backend/TrackedBuildClassifier.h
+    ${SRC_DIR}/backend/CurioSettings.h
+    ${SRC_DIR}/backend/TrackedBuildMatcher.h
+    ${SRC_DIR}/ui/TrackedBuildSetupDialog.h
 )
 
 add_executable(curio
@@ -76,6 +108,7 @@ add_executable(curio
 
 target_compile_definitions(curio PRIVATE
     $<$<BOOL:${HAVE_APPSTREAM_QT}>:HAVE_APPSTREAM_QT=1>
+    $<$<BOOL:${CURIO_SANDBOXED_LIBFLATPAK}>:CURIO_SANDBOXED_LIBFLATPAK=1>
 )
 
 target_include_directories(curio PRIVATE
@@ -85,7 +118,9 @@ target_include_directories(curio PRIVATE
     ${SRC_DIR}/backend
 )
 
-target_link_libraries(curio PRIVATE Qt6::Widgets Qt6::Network)
+target_include_directories(curio PRIVATE ${FLATPAK_INCLUDE_DIRS})
+target_link_directories(curio PRIVATE ${FLATPAK_LIBRARY_DIRS})
+target_link_libraries(curio PRIVATE Qt6::Widgets Qt6::Network Qt6::Concurrent ${FLATPAK_LIBRARIES})
 if(HAVE_APPSTREAM_QT)
   if(DEFINED APPSTREAM_QT_TARGET)
     target_link_libraries(curio PRIVATE ${APPSTREAM_QT_TARGET})
@@ -98,8 +133,11 @@ endif()
 
 install(TARGETS curio RUNTIME DESTINATION bin)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/curio.desktop
-        DESTINATION share/applications)
+        DESTINATION share/applications
+        RENAME io.github.curio.Curio.desktop)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png
-        DESTINATION share/icons/hicolor/256x256/apps
-        RENAME curio.png)
+        DESTINATION share/icons/hicolor/512x512/apps
+        RENAME io.github.curio.Curio.png)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/io.github.curio.Curio.metainfo.xml
+        DESTINATION share/metainfo)
 

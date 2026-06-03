@@ -24,6 +24,7 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     void setApps(const QVector<AppInfo> &apps);
+    void patchApps(const QVector<AppInfo> &updates);
     AppInfo appAt(int row) const;
 
 private:

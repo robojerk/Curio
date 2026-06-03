@@ -23,6 +23,8 @@ public:
     ~AppStreamProvider() override;
 
 private:
+    void enrichFromAppStreamPool(AppInfo &info) const;
+    void enrichFromInstalledMetainfo(AppInfo &info) const;
     void ensurePoolLoaded() const;
     bool debugEnabled() const;
 

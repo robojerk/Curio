@@ -1,0 +1,10 @@
+{
+  "action": "published",
+  "release": {
+    "tag_name": "alpha_1",
+    "name": "alpha_1",
+    "draft": false,
+    "prerelease": true,
+    "body": "Planned pre-release for local act testing."
+  }
+}
