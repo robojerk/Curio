@@ -24,6 +24,7 @@ public:
                            FlatpakScope scope = FlatpakScope::User);
     void uninstallRef(const Operation &op, FlatpakScope scope);
     void updateRef(const Operation &op, FlatpakScope scope);
+    void updateFlatpakRef(const Operation &op, FlatpakScope scope, const QString &flatpakRef);
     void installBundle(const Operation &op,
                        const QString &bundlePath,
                        FlatpakScope scope,

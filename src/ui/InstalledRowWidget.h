@@ -19,6 +19,7 @@ public:
     void setApp(const AppInfo &info);
     void setTrackGitRepoLink(bool enabled, const QString &label);
     void setTrackedUpdateAvailable(bool available, const QString &releaseTag);
+    void setRemoteUpdateAvailable(bool available);
     void setUpdateInProgress(bool inProgress, const QString &statusText = QString(), int progress = -1);
     void setUninstallInProgress(bool inProgress);
 
@@ -37,6 +38,7 @@ protected:
 private:
     void updateSourceLabel();
     void updateSummaryLabel();
+    void syncUpdateButtonVisibility();
     void layoutUninstallProgress();
     void layoutUpdateProgress();
     void tickUninstallProgress();
@@ -46,6 +48,7 @@ private:
     QString m_trackLinkLabel;
     bool m_trackedUpdateAvailable = false;
     QString m_trackedUpdateTag;
+    bool m_remoteUpdateAvailable = false;
     bool m_updateInProgress = false;
 
     QLabel *m_iconLabel = nullptr;

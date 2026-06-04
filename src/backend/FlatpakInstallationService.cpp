@@ -1,4 +1,5 @@
 #include "FlatpakInstallationService.h"
+#include "AppDisplayNames.h"
 #include "FlatpakRefMapper.h"
 #include "FlatpakRemoteCatalog.h"
 #include "FlatpakGlibInclude.h"
@@ -161,6 +162,96 @@ QVector<AppInfo> FlatpakInstallationService::listInstalledApps()
     QVector<AppInfo> apps;
     apps += listInstalledAppsForScope(FlatpakScope::System);
     apps += listInstalledAppsForScope(FlatpakScope::User);
+    return apps;
+}
+
+QVector<AppInfo> FlatpakInstallationService::listAvailableUpdatesForScope(FlatpakScope scope)
+{
+    QVector<AppInfo> apps;
+    FlatpakInstallation *installation = silentInstallation(scope);
+    if (!installation)
+        return apps;
+
+    g_autoptr(GError) error = nullptr;
+    g_autoptr(GPtrArray) refs =
+            flatpak_installation_list_installed_refs_for_update(installation, nullptr, &error);
+    if (!refs) {
+        if (error)
+            qWarning() << "FlatpakInstallationService: list updates failed:"
+                       << flatpakScopeToString(scope) << error->message;
+        return apps;
+    }
+
+    for (guint i = 0; i < refs->len; ++i) {
+        auto *installedRef = FLATPAK_INSTALLED_REF(g_ptr_array_index(refs, i));
+        if (flatpak_ref_get_kind(FLATPAK_REF(installedRef)) != FLATPAK_REF_KIND_APP)
+            continue;
+
+        AppInfo info = FlatpakRefMapper::appFromInstalledRef(installedRef, scope);
+        if (info.id.isEmpty())
+            continue;
+        info.remoteUpdateAvailable = true;
+        apps.append(info);
+    }
+    return apps;
+}
+
+QVector<AppInfo> FlatpakInstallationService::listAvailableUpdates()
+{
+    QMutexLocker lock(&m_mutex);
+    QVector<AppInfo> apps;
+    apps += listAvailableUpdatesForScope(FlatpakScope::System);
+    apps += listAvailableUpdatesForScope(FlatpakScope::User);
+    return apps;
+}
+
+QVector<AppInfo> FlatpakInstallationService::listAvailableRuntimeUpdatesForScope(FlatpakScope scope)
+{
+    QVector<AppInfo> apps;
+    FlatpakInstallation *installation = silentInstallation(scope);
+    if (!installation)
+        return apps;
+
+    g_autoptr(GError) error = nullptr;
+    g_autoptr(GPtrArray) refs =
+            flatpak_installation_list_installed_refs_for_update(installation, nullptr, &error);
+    if (!refs) {
+        if (error)
+            qWarning() << "FlatpakInstallationService: list runtime updates failed:"
+                       << flatpakScopeToString(scope) << error->message;
+        return apps;
+    }
+
+    for (guint i = 0; i < refs->len; ++i) {
+        auto *installedRef = FLATPAK_INSTALLED_REF(g_ptr_array_index(refs, i));
+        const auto kind = flatpak_ref_get_kind(FLATPAK_REF(installedRef));
+        if (kind != FLATPAK_REF_KIND_RUNTIME)
+            continue;
+
+        AppInfo info = FlatpakRefMapper::appFromInstalledRef(installedRef, scope);
+        if (info.id.isEmpty() || info.installedFlatpakRef.isEmpty())
+            continue;
+
+        info.isRuntimeUpdate = true;
+        info.remoteUpdateAvailable = true;
+        if (info.name.isEmpty() || info.name == info.id) {
+            const QString branch = info.version.trimmed();
+            info.name = branch.isEmpty()
+                    ? AppDisplayNames::displayName(QString(), info.id)
+                    : QObject::tr("%1 version %2")
+                              .arg(AppDisplayNames::displayName(QString(), info.id), branch);
+        }
+        apps.append(info);
+    }
+    return apps;
+}
+
+QVector<AppInfo> FlatpakInstallationService::listAvailableRuntimeUpdates()
+{
+    QMutexLocker lock(&m_mutex);
+    QVector<AppInfo> apps;
+    apps += listAvailableRuntimeUpdatesForScope(FlatpakScope::System);
+    apps += listAvailableRuntimeUpdatesForScope(FlatpakScope::User);
     return apps;
 }
 

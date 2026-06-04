@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QHash>
+#include <QPointer>
+#include <QSet>
 #include <QMainWindow>
 #include <QVector>
 
@@ -27,7 +29,9 @@ class QTabBar;
 class QTimer;
 class QWidget;
 
+class AppCardWidget;
 class AppDetailsWidget;
+class RuntimeUpdatesRowWidget;
 class AppListModel;
 class InstalledRowWidget;
 class OperationModel;
@@ -52,9 +56,15 @@ private slots:
     void onStoreFeedChanged(int index);
     void onSettingsSectionChanged(int row);
     void showDetailsForApp(const QString &appId);
-    void onExploreInstallRequested(const QString &appId);
+    void presentAppDetailsPage(const AppInfo &info);
+    void installStoreApp(const AppInfo &info);
     void onInstalledUninstallRequested(const QString &appId);
     void onCheckForUpdatesTriggered();
+    void onUpdateAllTriggered();
+    void startNextQueuedUpdate();
+    void finishUpdateAll();
+    bool appHasPendingUpdate(const AppInfo &app) const;
+    void refreshUpdateAllButtonState();
     void onClearLeftoverUserDataTriggered();
     void onRefreshRemotesTriggered();
     void onAddRemoteTriggered();
@@ -76,15 +86,29 @@ private slots:
 private:
     void setupUi();
     void connectBackend();
+    void clearExploreGridLayout();
     void rebuildExploreCards();
+    void scheduleExploreRebuild();
+    void scheduleDeferredExploreIconRefresh();
+    QVector<AppInfo> exploreAppsForFeedIndex(int feedIndex) const;
+    void refreshCurrentStoreFeed();
+    void scheduleExploreResizeReflow();
+    bool tryRefreshExploreInPlace();
+    QString exploreModelSignature(const QVector<AppInfo> &apps) const;
+    QVector<AppInfo> filteredCategoryApps() const;
+    void rebuildStoreCategoryCards();
+    void scheduleCategoryResizeReflow();
+    bool tryRefreshCategoryInPlace();
+    void updateExploreSkeleton();
+    void updateCategoryFeed();
     void rebuildInstalledRows();
     void refreshAllData();
     void refreshLeftoverDataPane();
     void refreshFeaturedBanner(const QVector<AppInfo> &apps);
     void refreshActiveBannerCard();
+    void updateFeaturedBannerLayout();
     void scrollBannerBy(int direction);
     void refreshStoreCategoriesPane();
-    void rebuildStoreCategoryCards();
     StoreTemplate defaultStoreTemplate() const;
     QVector<StoreTemplate> allStoreTemplates() const;
     void updateStoreTemplatesForRemotes(const QVector<QPair<QString, QString>> &remotes);
@@ -95,23 +119,33 @@ private:
     void refreshTrackedBuildsList();
     void runDeferredStartup();
     void applyStoreDiscoveryData();
-    void scheduleExploreRebuild();
     void patchStoreCollectionsIcons(const QVector<AppInfo> &updates);
-    void refreshExploreCardIcons();
+    void patchStoreCollectionsMetadata(const QVector<AppInfo> &updates);
     struct TrackedUpdateSummary {
         int trackedInstalledCount = 0;
-        int pendingUpdateCount = 0;
+        int trackedPendingCount = 0;
+        int flatpakPendingCount = 0;
+        int runtimePendingCount = 0;
         QStringList errors;
     };
-    TrackedUpdateSummary summarizeTrackedUpdates() const;
-    void refreshTrackedUpdateBanner();
+    void refreshRuntimeUpdatesRow();
+    TrackedUpdateSummary summarizeInstalledUpdates() const;
+    void refreshInstalledUpdateBanner();
     void updateInstalledNavAttention();
     void finishCheckForUpdatesFeedback(bool userInitiated);
+    void refreshInstalledRowUpdateState(InstalledRowWidget *row, const AppInfo &app);
+    void refreshAllInstalledRowUpdateStates();
+    void completePendingUpdateCheck(bool userInitiated);
     void setStoreFeedLoading(bool loading);
     void beginStoreRefresh(bool forceRefresh = false);
-    static QString exploreModelSignature(const QVector<AppInfo> &apps);
-    void clearExploreGridLayout();
     void updateInstalledRowOperation(const Operation &op, bool finished);
+    void updateStoreCardOperation(const Operation &op, bool finished);
+    void syncStoreFeedsInstalledState();
+    void refreshStoreCardsInstalledUi();
+    void pruneStaleStoreCards();
+    AppCardWidget *storeCardForAppId(const QString &appId) const;
+    AppInfo lookupStoreFeedApp(const QString &appId) const;
+    QSet<QString> installedAppIds() const;
     void updateTrackedInstallFeedback(const Operation &op, bool finished);
     void beginTrackedInstallFeedback(const QString &appId, const QString &releaseTag);
     QVector<AppInfo> installedAppsSnapshot() const;
@@ -122,17 +156,19 @@ private:
 
     bool m_deferredStartupDone = false;
     bool m_checkForUpdatesPending = false;
+    int m_pendingUpdateCheckTasks = 0;
     bool m_installedNavPulseBright = false;
-    bool m_exploreRebuildScheduled = false;
     bool m_storeFeedLoading = false;
+    bool m_showExploreSkeleton = false;
     QString m_appliedStoreRepoId;
-    QString m_lastExploreModelSignature;
-    int m_lastExploreColumnCount = 0;
     QHash<QString, InstalledRowWidget *> m_installedRowsByAppId;
+    QHash<QString, QPointer<AppCardWidget>> m_storeCardsByAppId;
     QString m_trackedInstallFeedbackAppId;
 
     QStackedWidget *m_stack = nullptr;
+    QWidget *m_bannerHost = nullptr;
     QWidget *m_bannerWidget = nullptr;
+    int m_bannerIconPixels = 72;
     QLabel *m_bannerEyebrowLabel = nullptr;
     QLabel *m_bannerTitleLabel = nullptr;
     QLabel *m_bannerSummaryLabel = nullptr;
@@ -153,13 +189,21 @@ private:
     QTabBar *m_storeFeedTabs = nullptr;
     QLabel *m_storeStatusLabel = nullptr;
     QStackedWidget *m_mainContent = nullptr;
+    QScrollArea *m_exploreScroll = nullptr;
     QWidget *m_exploreContainer = nullptr;
     QWidget *m_storeCategoriesContainer = nullptr;
     QListWidget *m_storeCategoriesList = nullptr;
     QWidget *m_storeCategoryCardsContainer = nullptr;
     QWidget *m_installedContainer = nullptr;
     QPushButton *m_checkUpdatesButton = nullptr;
+    QPushButton *m_updateAllButton = nullptr;
     QLabel *m_checkUpdatesStatusLabel = nullptr;
+    RuntimeUpdatesRowWidget *m_runtimeUpdatesRow = nullptr;
+    QVector<AppInfo> m_runtimeUpdateQueue;
+    QString m_runtimeUpdateCurrentRef;
+    QStringList m_updateAllQueue;
+    QString m_updateAllCurrentAppId;
+    bool m_updateAllActive = false;
     QWidget *m_settingsPage = nullptr;
     QListWidget *m_settingsNavList = nullptr;
     QStackedWidget *m_settingsDetailStack = nullptr;
@@ -185,10 +229,23 @@ private:
     AppDetailsWidget *m_detailsWidget = nullptr;
 
     AppListModel *m_exploreModel = nullptr;
+    AppListModel *m_categoryModel = nullptr;
+    QString m_lastExploreModelSignature;
+    int m_lastExploreColumnCount = 0;
+    bool m_exploreRebuildScheduled = false;
+    bool m_exploreIconRefreshScheduled = false;
+    QTimer *m_exploreIconRefreshTimer = nullptr;
+    QVector<AppCardWidget *> m_exploreIconRefreshQueue;
+    int m_exploreIconRefreshIndex = 0;
+    QTimer *m_exploreResizeTimer = nullptr;
+    QString m_lastCategorySignature;
+    int m_lastCategoryColumnCount = 0;
+    QTimer *m_categoryResizeTimer = nullptr;
     AppListModel *m_installedModel = nullptr;
     OperationModel *m_operationModel = nullptr;
     FlatpakBackend *m_backend = nullptr;
     QString m_currentDetailsAppId;
+    AppInfo m_detailsPageAppInfo;
     QString m_lastSearchQuery;
     QTimer *m_searchDebounceTimer = nullptr;
     QTimer *m_installedNavPulseTimer = nullptr;

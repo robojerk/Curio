@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QDir>
 #include <QFileInfo>
 #include <QIcon>
 #include <QStandardPaths>
@@ -7,6 +8,21 @@
 #include "ui/MainWindow.h"
 
 namespace {
+
+void configureFlatpakIconThemePaths()
+{
+    QStringList paths = QIcon::themeSearchPaths();
+    const QString home = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+    const QStringList flatpakIconRoots = {
+        home + QStringLiteral("/.local/share/flatpak/exports/share/icons"),
+        QStringLiteral("/var/lib/flatpak/exports/share/icons"),
+    };
+    for (const QString &root : flatpakIconRoots) {
+        if (QDir(root).exists() && !paths.contains(root))
+            paths.prepend(root);
+    }
+    QIcon::setThemeSearchPaths(paths);
+}
 
 QString installedDesktopFileName()
 {
@@ -25,6 +41,7 @@ QString installedDesktopFileName()
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
+    configureFlatpakIconThemePaths();
     app.setApplicationName("Curio");
     app.setApplicationDisplayName("Curio");
     app.setOrganizationName("Curio");

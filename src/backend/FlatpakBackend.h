@@ -31,8 +31,12 @@ public:
     void fetchStoreSuggestions(const QString &repoId = QStringLiteral("flathub"),
                                bool forceRefresh = false);
     void refreshCatalogIndex(const QString &repoId = QStringLiteral("flathub"));
+    void scheduleCatalogIndexAfterApiSuccess(const QString &repoId);
     void emitCachedDiscoveryData();
     bool flathubCollectionsFreshForToday() const;
+    /** Load cached metadata for details/search without blocking on AppStream. */
+    bool loadCachedAppMetadata(const QString &repoId, const QString &appId, AppInfo *out) const;
+    void enrichAppMetadataAsync(const AppInfo &app);
     /** AppStream enrichment for detail views; list/browse avoids this for responsiveness. */
     void enrichAppMetadata(AppInfo &app) const;
     QString catalogPageUrlForInstalledApp(const QString &origin, const QString &appId) const;
@@ -57,11 +61,18 @@ public:
 
     QNetworkAccessManager *networkAccessManager() const { return m_networkManager; }
     void uninstall(const QString &appId);
+    void launchApp(const QString &appId);
     void update(const QString &appId, const QString &installedVersion = QString());
+    void updateInstalledFlatpakRef(const QString &flatpakRef, FlatpakScope scope);
     /** Install from tracked Git release when newer than installedVersion; returns true if handled. */
     bool tryInstallTrackedBuildUpdate(const QString &appId, const QString &installedVersion);
     void applyTrackedBuildMetadata(QVector<AppInfo> *apps) const;
     void refreshTrackedBuilds();
+    void refreshRemoteUpdates();
+    bool hasRemoteUpdate(const QString &appId) const;
+    int remoteUpdateCount() const;
+    int runtimeUpdateCount() const;
+    QVector<AppInfo> runtimeUpdates() const;
     QVector<TrackedBuildProject> trackedBuildProjects() const;
     void upsertTrackedBuildProject(const TrackedBuildProject &project);
     void removeTrackedBuildProject(const QString &projectId);
@@ -78,6 +89,10 @@ signals:
     void storeFetchFailed(const QString &repoId, const QString &message);
     /** Metadata patches from background remote-ls catalog index. */
     void storeCatalogIndexReady(const QString &repoId, const QVector<AppInfo> &patches);
+    /** Incremental catalog index chunk (every ~200 apps). */
+    void catalogChunkReady(const QString &repoId, const QVector<AppInfo> &apps);
+    /** Batched store list patches (icons + catalog fields), coalesced ~80ms. */
+    void storeCollectionsPatched(const QString &repoId, const QVector<AppInfo> &apps);
     /** Batched AppStream icon metadata for apps currently shown in store lists. */
     void storeIconsEnriched(const QString &repoId, const QVector<AppInfo> &apps);
     void flathubSuggestionsUpdated(const QVector<AppInfo> &apps);
@@ -95,7 +110,11 @@ signals:
     void trackedBuildProjectsUpdated(const QVector<TrackedBuildProject> &projects);
     void trackedBuildRefreshFinished();
     void trackedBuildRefreshFailed(const QString &message);
+    void remoteUpdatesChecked(int appUpdateCount, int runtimeUpdateCount);
+    void remoteUpdatesCheckFailed(const QString &message);
     void installedAppsMetadataEnriched(const QVector<AppInfo> &patches);
+    void appMetadataEnriched(const AppInfo &app);
+    void catalogIndexFinished(const QString &repoId);
 
 private:
     QString cacheKeyForQuery(const QString &query) const;
@@ -149,6 +168,10 @@ private:
                                               const QVector<AppInfo> &cached);
     static void mergeCatalogFields(AppInfo *app, const AppInfo &catalog);
     void patchCollectionsFromCatalogIndex(const QString &repoId);
+    void queueStoreCollectionPatch(const AppInfo &app);
+    void flushStoreCollectionPatches();
+    void refreshCatalogIndexInProcess(const QString &repoId);
+    void refreshCatalogIndexViaSubprocess(const QString &repoId);
     static QString todayUtcCollectionDay();
     void scheduleInstalledMetadataEnrichment(const QVector<AppInfo> &apps);
     void processInstalledMetadataEnrichmentBatch();
@@ -159,6 +182,7 @@ private:
     QNetworkAccessManager *m_networkManager = nullptr;
     class FlathubApiClient *m_flathubApiClient = nullptr;
     class TrackedBuildSource *m_trackedBuildSource = nullptr;
+    class CatalogCache *m_catalogCache = nullptr;
     QHash<QString, QVector<AppInfo>> m_searchCache;
     QHash<QString, qint64> m_searchCacheTimestamps;
     QString m_cachePath;
@@ -198,4 +222,11 @@ private:
     QTimer *m_installedEnrichTimer = nullptr;
     QVector<AppInfo> m_installedEnrichQueue;
     int m_installedEnrichIndex = 0;
+    QTimer *m_uiCoalesceTimer = nullptr;
+    QHash<QString, AppInfo> m_pendingStorePatches;
+    QString m_pendingStorePatchRepoId;
+    QSet<QString> m_remoteUpdateAppIds;
+    QVector<AppInfo> m_runtimeUpdates;
+    bool m_catalogIndexRunning = false;
+    QString m_pendingCatalogIndexRepoId;
 };

@@ -54,6 +54,7 @@ set(SOURCES
     ${SRC_DIR}/ui/AppDetailsWidget.cpp
     ${SRC_DIR}/ui/AppCardWidget.cpp
     ${SRC_DIR}/ui/InstalledRowWidget.cpp
+    ${SRC_DIR}/ui/RuntimeUpdatesRowWidget.cpp
     ${SRC_DIR}/models/AppListModel.cpp
     ${SRC_DIR}/models/OperationModel.cpp
     ${SRC_DIR}/backend/FlatpakBackend.cpp
@@ -69,6 +70,7 @@ set(SOURCES
     ${SRC_DIR}/backend/TrackedBuildClassifier.cpp
     ${SRC_DIR}/backend/CurioSettings.cpp
     ${SRC_DIR}/backend/TrackedBuildMatcher.cpp
+    ${SRC_DIR}/backend/CatalogCache.cpp
     ${SRC_DIR}/ui/TrackedBuildSetupDialog.cpp
 )
 
@@ -78,6 +80,7 @@ set(HEADERS
     ${SRC_DIR}/ui/AppDetailsWidget.h
     ${SRC_DIR}/ui/AppCardWidget.h
     ${SRC_DIR}/ui/InstalledRowWidget.h
+    ${SRC_DIR}/ui/RuntimeUpdatesRowWidget.h
     ${SRC_DIR}/models/AppInfo.h
     ${SRC_DIR}/models/StoreTemplate.h
     ${SRC_DIR}/models/TrackedBuild.h
@@ -98,6 +101,7 @@ set(HEADERS
     ${SRC_DIR}/backend/TrackedBuildClassifier.h
     ${SRC_DIR}/backend/CurioSettings.h
     ${SRC_DIR}/backend/TrackedBuildMatcher.h
+    ${SRC_DIR}/backend/CatalogCache.h
     ${SRC_DIR}/ui/TrackedBuildSetupDialog.h
 )
 
@@ -140,4 +144,14 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png
         RENAME io.github.curio.Curio.png)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/io.github.curio.Curio.metainfo.xml
         DESTINATION share/metainfo)
+
+add_executable(curio-catalog-worker
+    ${SRC_DIR}/tools/catalog_worker.cpp
+)
+target_include_directories(curio-catalog-worker PRIVATE
+    ${SRC_DIR}
+    ${SRC_DIR}/models
+)
+target_link_libraries(curio-catalog-worker PRIVATE Qt6::Core)
+install(TARGETS curio-catalog-worker RUNTIME DESTINATION bin)
 

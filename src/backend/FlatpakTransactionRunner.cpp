@@ -229,6 +229,14 @@ void FlatpakTransactionRunner::uninstallRef(const Operation &op, FlatpakScope sc
 void FlatpakTransactionRunner::updateRef(const Operation &op, FlatpakScope scope)
 {
     const QString ref = m_installations->refForAppId(op.appId, scope);
+    updateFlatpakRef(op, scope, ref);
+}
+
+void FlatpakTransactionRunner::updateFlatpakRef(const Operation &op,
+                                                FlatpakScope scope,
+                                                const QString &flatpakRef)
+{
+    const QString ref = flatpakRef.trimmed();
     if (ref.isEmpty()) {
         Operation failed = op;
         failed.status = OperationStatus::Failed;

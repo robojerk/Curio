@@ -28,6 +28,10 @@ public:
     FlatpakInstallation *interactiveInstallation(FlatpakScope scope) const;
 
     QVector<AppInfo> listInstalledApps();
+    /** App IDs with newer versions on their configured remotes (libflatpak update scan). */
+    QVector<AppInfo> listAvailableUpdates();
+    /** Installed runtimes/SDKs with available updates (libflatpak update scan). */
+    QVector<AppInfo> listAvailableRuntimeUpdates();
     QVector<QPair<QString, QString>> listRemotes();
     QVector<AppInfo> searchApps(const QString &query);
     QVector<AppInfo> listRemoteApps(const QString &remoteName);
@@ -61,6 +65,8 @@ private:
     bool remoteExistsOnInstallation(FlatpakInstallation *installation,
                                     const QString &remoteName) const;
     QVector<AppInfo> listInstalledAppsForScope(FlatpakScope scope);
+    QVector<AppInfo> listAvailableUpdatesForScope(FlatpakScope scope);
+    QVector<AppInfo> listAvailableRuntimeUpdatesForScope(FlatpakScope scope);
     QVector<AppInfo> searchAppsOnInstallation(FlatpakInstallation *installation,
                                               const QString &query,
                                               const QString &remoteLabel);

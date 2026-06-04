@@ -9,8 +9,12 @@
 #include <QNetworkRequest>
 #include <QPalette>
 #include <QPixmap>
+#include <QPointer>
+#include <QProgressBar>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScrollArea>
+#include <QTimer>
 #include <QTextBrowser>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -18,6 +22,7 @@
 #include "backend/FlatpakBackend.h"
 #include "backend/FlatpakRemoteCatalog.h"
 #include "backend/TrackedBuildClassifier.h"
+#include "models/Operation.h"
 
 namespace {
 
@@ -121,14 +126,41 @@ AppDetailsWidget::AppDetailsWidget(FlatpakBackend *backend, QWidget *parent)
     headerLayout->addStretch();
 
     m_installButton = new QPushButton(tr("Install"), this);
+    m_installButton->setFixedHeight(36);
+    m_installProgress = new QProgressBar(m_installButton);
+    m_installProgress->setTextVisible(false);
+    m_installProgress->setRange(0, 100);
+    m_installProgress->setValue(0);
+    m_installProgress->hide();
+    m_installProgress->setStyleSheet(QStringLiteral(
+        "QProgressBar {"
+        "  border: 1px solid rgba(255,255,255,0.12);"
+        "  border-radius: 8px;"
+        "  background-color: rgba(80,80,88,0.55);"
+        "}"
+        "QProgressBar::chunk {"
+        "  border-radius: 7px;"
+        "  background-color: rgba(90,160,220,0.95);"
+        "}"
+    ));
+    m_installProgressTimer = new QTimer(this);
+    m_installProgressTimer->setInterval(45);
+    connect(m_installProgressTimer, &QTimer::timeout, this, &AppDetailsWidget::tickInstallProgress);
+
+    m_launchButton = new QPushButton(tr("Launch"), this);
+    m_launchButton->setFixedHeight(36);
     m_removeButton = new QPushButton(tr("Remove"), this);
+    m_removeButton->setFixedHeight(36);
     m_updateButton = new QPushButton(tr("Update"), this);
+    m_updateButton->setFixedHeight(36);
     m_manageButton = new QPushButton(tr("Manage"), this);
+    m_manageButton->setFixedHeight(36);
     m_manageButton->setEnabled(false);
 
     auto *buttonsLayout = new QVBoxLayout;
     buttonsLayout->setSpacing(6);
     buttonsLayout->addWidget(m_installButton);
+    buttonsLayout->addWidget(m_launchButton);
     buttonsLayout->addWidget(m_removeButton);
     buttonsLayout->addWidget(m_updateButton);
     buttonsLayout->addWidget(m_manageButton);
@@ -209,13 +241,91 @@ AppDetailsWidget::AppDetailsWidget(FlatpakBackend *backend, QWidget *parent)
     rootLayout->addWidget(scroll);
 
     connect(m_installButton, &QPushButton::clicked, this, &AppDetailsWidget::onInstallClicked);
+    connect(m_launchButton, &QPushButton::clicked, this, &AppDetailsWidget::onLaunchClicked);
+    connect(m_backend, &FlatpakBackend::operationStarted, this, [this](const Operation &op) {
+        if (op.appId != m_info.id)
+            return;
+        if (op.type == OperationType::Install)
+            setInstallInProgress(true, op.progress);
+        else if (op.type == OperationType::Uninstall && op.status == OperationStatus::Running)
+            m_removeButton->setEnabled(false);
+    });
+    connect(m_backend, &FlatpakBackend::operationProgress, this, [this](const Operation &op) {
+        if (op.appId != m_info.id || op.type != OperationType::Install)
+            return;
+        setInstallInProgress(true, op.progress);
+    });
+    connect(m_backend, &FlatpakBackend::operationFinished, this, [this](const Operation &op) {
+        if (op.appId != m_info.id)
+            return;
+        if (op.type == OperationType::Install)
+            setInstallInProgress(false);
+        if (op.type == OperationType::Install && op.status == OperationStatus::Succeeded)
+            m_info.installed = true;
+        if (op.type == OperationType::Uninstall && op.status == OperationStatus::Succeeded)
+            setInstalled(false);
+        else
+            updateButtonStates();
+    });
     connect(m_removeButton, &QPushButton::clicked, this, &AppDetailsWidget::onRemoveClicked);
     connect(m_updateButton, &QPushButton::clicked, this, &AppDetailsWidget::onUpdateClicked);
     connect(m_manageButton, &QPushButton::clicked, this, &AppDetailsWidget::onManageClicked);
 }
 
+void AppDetailsWidget::cancelPendingLoads()
+{
+    ++m_loadGeneration;
+    if (m_network)
+        m_network->clearAccessCache();
+}
+
+void AppDetailsWidget::setInstalled(bool installed)
+{
+    if (m_info.installed == installed)
+        return;
+    m_info.installed = installed;
+    if (!installed) {
+        m_originLabel->clear();
+        m_originLabel->setVisible(false);
+    }
+    updateButtonStates();
+}
+
+void AppDetailsWidget::applyMetadataPatch(const AppInfo &patch)
+{
+    if (patch.id != m_info.id)
+        return;
+
+    const auto fill = [](QString &dst, const QString &src) {
+        if (!src.isEmpty())
+            dst = src;
+    };
+    fill(m_info.name, patch.name);
+    fill(m_info.summary, patch.summary);
+    fill(m_info.longDescription, patch.longDescription);
+    fill(m_info.version, patch.version);
+    fill(m_info.iconUrl, patch.iconUrl);
+    fill(m_info.iconName, patch.iconName);
+    fill(m_info.developerName, patch.developerName);
+    fill(m_info.projectLicense, patch.projectLicense);
+    fill(m_info.repoId, patch.repoId);
+    fill(m_info.homepageUrl, patch.homepageUrl);
+    fill(m_info.vcsUrl, patch.vcsUrl);
+    fill(m_info.bugtrackerUrl, patch.bugtrackerUrl);
+    fill(m_info.helpUrl, patch.helpUrl);
+    fill(m_info.donateUrl, patch.donateUrl);
+    fill(m_info.translateUrl, patch.translateUrl);
+    if (!patch.categories.isEmpty())
+        m_info.categories = patch.categories;
+    if (!patch.screenshotUrls.isEmpty())
+        m_info.screenshotUrls = patch.screenshotUrls;
+
+    setApp(m_info);
+}
+
 void AppDetailsWidget::setApp(const AppInfo &info)
 {
+    cancelPendingLoads();
     m_info = info;
     m_titleLabel->setText(info.name);
     m_idLabel->setText(info.version.isEmpty()
@@ -352,8 +462,15 @@ void AppDetailsWidget::setApp(const AppInfo &info)
             pm.load(info.iconUrl);
         else if (url.scheme() == QLatin1String("http") || url.scheme() == QLatin1String("https")) {
             const QString expectedUrl = url.toString();
-            QNetworkReply *reply = m_network->get(QNetworkRequest(url));
-            connect(reply, &QNetworkReply::finished, this, [this, reply, expectedUrl]() {
+            const quint64 generation = m_loadGeneration;
+            QNetworkRequest iconReq(url);
+            iconReq.setTransferTimeout(15'000);
+            QNetworkReply *reply = m_network->get(iconReq);
+            connect(reply, &QNetworkReply::finished, this, [this, reply, expectedUrl, generation]() {
+                if (generation != m_loadGeneration) {
+                    reply->deleteLater();
+                    return;
+                }
                 if (reply->error() == QNetworkReply::NoError) {
                     QPixmap downloaded;
                     if (m_info.iconUrl == expectedUrl &&
@@ -393,13 +510,21 @@ void AppDetailsWidget::setApp(const AppInfo &info)
             label->setStyleSheet(QStringLiteral("border: 1px solid gray; border-radius: 4px; background: palette(base);"));
             label->setScaledContents(false);
             box->addWidget(label);
-            QNetworkRequest req(QUrl(info.screenshotUrls.at(i)));
+            const QString shotUrl = info.screenshotUrls.at(i);
+            const quint64 generation = m_loadGeneration;
+            QNetworkRequest req = QNetworkRequest(QUrl(shotUrl));
+            req.setTransferTimeout(15'000);
             QNetworkReply *reply = m_network->get(req);
-            connect(reply, &QNetworkReply::finished, this, [reply, label]() {
-                if (reply->error() == QNetworkReply::NoError) {
+            QPointer<QLabel> labelGuard(label);
+            connect(reply, &QNetworkReply::finished, this, [reply, labelGuard, generation, shotUrl, this]() {
+                if (generation != m_loadGeneration || !labelGuard) {
+                    reply->deleteLater();
+                    return;
+                }
+                if (reply->error() == QNetworkReply::NoError && m_info.screenshotUrls.contains(shotUrl)) {
                     QPixmap pm;
                     if (pm.loadFromData(reply->readAll()))
-                        label->setPixmap(pm.scaled(220, 140, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                        labelGuard->setPixmap(pm.scaled(220, 140, Qt::KeepAspectRatio, Qt::SmoothTransformation));
                 }
                 reply->deleteLater();
             });
@@ -411,8 +536,15 @@ void AppDetailsWidget::setApp(const AppInfo &info)
 
 void AppDetailsWidget::onInstallClicked()
 {
-    if (m_backend)
-        m_backend->install(m_info.id, m_info.repoId);
+    if (m_info.id.isEmpty() || m_info.installed)
+        return;
+    emit installRequested(m_info);
+}
+
+void AppDetailsWidget::onLaunchClicked()
+{
+    if (m_backend && m_info.installed)
+        m_backend->launchApp(m_info.id);
 }
 
 void AppDetailsWidget::onRemoveClicked()
@@ -432,15 +564,77 @@ void AppDetailsWidget::onManageClicked()
     // Placeholder: future permissions / halt updates
 }
 
+void AppDetailsWidget::setInstallInProgress(bool inProgress, int progress)
+{
+    m_installInProgress = inProgress;
+    if (!m_installButton || !m_installProgress)
+        return;
+
+    if (inProgress) {
+        m_installButton->setVisible(true);
+        m_installButton->setEnabled(false);
+        m_installButton->setText(QString());
+        if (progress >= 0) {
+            m_installProgressTimer->stop();
+            m_installProgress->setValue(qBound(0, progress, 100));
+        } else {
+            m_installProgressValue = 0;
+            m_installProgress->setValue(0);
+            m_installProgressTimer->start();
+        }
+        m_installProgress->show();
+        layoutInstallProgress();
+        return;
+    }
+
+    m_installProgressTimer->stop();
+    m_installProgress->hide();
+    updateButtonStates();
+}
+
+void AppDetailsWidget::layoutInstallProgress()
+{
+    if (!m_installButton || !m_installProgress)
+        return;
+    const int margin = 3;
+    m_installProgress->setGeometry(margin,
+                                   margin,
+                                   m_installButton->width() - 2 * margin,
+                                   m_installButton->height() - 2 * margin);
+}
+
+void AppDetailsWidget::tickInstallProgress()
+{
+    m_installProgressValue += 3;
+    if (m_installProgressValue > 100)
+        m_installProgressValue = 0;
+    m_installProgress->setValue(m_installProgressValue);
+}
+
+void AppDetailsWidget::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    layoutInstallProgress();
+}
+
 void AppDetailsWidget::updateButtonStates()
 {
-    m_installButton->setEnabled(!m_info.installed);
-    m_removeButton->setEnabled(m_info.installed);
-    const bool trackedUpdate = m_info.installed
+    if (m_installInProgress)
+        return;
+
+    const bool installed = m_info.installed;
+    m_installButton->setVisible(!installed);
+    m_launchButton->setVisible(installed);
+    m_removeButton->setVisible(installed);
+    m_removeButton->setEnabled(installed);
+
+    const bool trackedUpdate = installed
             && !m_info.trackedStableAssetUrl.isEmpty()
             && TrackedBuildClassifier::isReleaseNewerThanInstalled(m_info.version,
                                                                    m_info.trackedStableVersion);
-    m_updateButton->setEnabled(m_info.installed);
+    const bool showUpdate = installed && trackedUpdate;
+    m_updateButton->setVisible(showUpdate);
+    m_updateButton->setEnabled(showUpdate);
     if (trackedUpdate && !m_info.trackedStableVersion.isEmpty()) {
         m_updateButton->setText(tr("Update to %1").arg(m_info.trackedStableVersion));
         m_updateButton->setToolTip(m_info.trackedStableAssetUrl);

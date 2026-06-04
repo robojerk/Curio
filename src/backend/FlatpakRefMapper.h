@@ -17,4 +17,7 @@ public:
     static AppInfo appFromRemoteRef(FlatpakRemoteRef *ref, const QString &remoteName);
     static AppInfo appFromSearchRef(FlatpakRef *ref, const QString &remoteName);
     static QString refString(FlatpakRef *ref);
+    /** Resolve icon file under Flatpak exports or deploy dir (bundle installs included). */
+    static QString installedIconFilePath(const QString &appId);
+    static QString installedIconName(const QString &appId);
 };

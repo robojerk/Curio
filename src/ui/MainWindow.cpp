@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 
+#include <QElapsedTimer>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QFrame>
@@ -20,6 +21,7 @@
 #include <QApplication>
 #include <QStandardPaths>
 #include <QDir>
+#include <QDebug>
 #include <QFileInfoList>
 #include <QFile>
 #include <QFileInfo>
@@ -45,6 +47,9 @@
 #include "ui/AppCardWidget.h"
 #include "ui/AppDetailsWidget.h"
 #include "ui/InstalledRowWidget.h"
+#include "ui/RuntimeUpdatesRowWidget.h"
+
+#include "backend/FlatpakScope.h"
 
 namespace {
 
@@ -64,18 +69,30 @@ protected:
     }
 };
 
+int exploreViewportWidth(QWidget *container)
+{
+    if (!container)
+        return 0;
+    for (QWidget *widget = container; widget; widget = widget->parentWidget()) {
+        if (auto *scroll = qobject_cast<QScrollArea *>(widget))
+            return scroll->viewport()->width();
+    }
+    return container->width();
+}
+
 int exploreAvailableWidth(QWidget *container, const QGridLayout *grid)
 {
     if (!container || !grid)
         return 0;
     const int margins = grid->contentsMargins().left() + grid->contentsMargins().right();
-    int width = container->width() - margins;
-    if (width >= AppCardWidget::PreferredWidth)
-        return width;
+    return qMax(0, exploreViewportWidth(container) - margins);
+}
 
-    if (auto *scroll = qobject_cast<QScrollArea *>(container->parentWidget()))
-        width = scroll->viewport()->width() - margins;
-    return qMax(0, width);
+int exploreGridPixelWidth(int columnCount, int spacing)
+{
+    if (columnCount <= 0)
+        return 0;
+    return columnCount * AppCardWidget::PreferredWidth + (columnCount - 1) * spacing;
 }
 
 int exploreColumnCount(int availableWidth, int spacing)
@@ -84,6 +101,19 @@ int exploreColumnCount(int availableWidth, int spacing)
     if (availableWidth <= 0)
         return 1;
     return qMax(1, (availableWidth + spacing) / (minCardWidth + spacing));
+}
+
+void startupTrace(const char *step)
+{
+    if (!qEnvironmentVariableIsSet("CURIO_STARTUP_TRACE"))
+        return;
+    static QElapsedTimer timer;
+    static bool started = false;
+    if (!started) {
+        timer.start();
+        started = true;
+    }
+    qInfo().noquote() << "[startup +" << timer.elapsed() << "ms]" << step;
 }
 
 } // namespace
@@ -96,12 +126,13 @@ MainWindow::MainWindow(QWidget *parent)
     m_appliedStoreRepoId = m_activeStoreTemplate.repoId;
     m_backend = new FlatpakBackend(this);
     m_exploreModel = new AppListModel(this);
+    m_categoryModel = new AppListModel(this);
     m_installedModel = new AppListModel(this);
     m_operationModel = new OperationModel(this);
 
     setupUi();
     connectBackend();
-    m_backend->emitCachedDiscoveryData();
+    startupTrace("connectBackend done");
     if (m_storeTemplateTabs) {
         m_storeTemplateTabs->blockSignals(true);
         m_storeTemplateTabs->setCurrentIndex(0);
@@ -113,6 +144,54 @@ MainWindow::MainWindow(QWidget *parent)
         m_storeFeedTabs->blockSignals(false);
     }
     onTopTabChanged(0);
+    startupTrace("onTopTabChanged done");
+    QTimer::singleShot(0, this, [this]() {
+        m_backend->emitCachedDiscoveryData();
+        startupTrace("emitCachedDiscoveryData done");
+        refreshCurrentStoreFeed();
+    });
+
+    m_exploreResizeTimer = new QTimer(this);
+    m_exploreResizeTimer->setSingleShot(true);
+    m_exploreResizeTimer->setInterval(80);
+    connect(m_exploreResizeTimer, &QTimer::timeout, this, [this]() {
+        if (!m_stack || m_stack->currentIndex() != 0 || !m_mainContent
+                || m_mainContent->currentIndex() != 0 || m_topSectionIndex != 0)
+            return;
+        auto *grid = qobject_cast<QGridLayout *>(
+                m_exploreContainer ? m_exploreContainer->layout() : nullptr);
+        if (!grid)
+            return;
+        const int spacing = grid->horizontalSpacing() > 0 ? grid->horizontalSpacing() : 12;
+        const int columns = exploreColumnCount(
+                exploreAvailableWidth(m_exploreContainer, grid), spacing);
+        if (columns != m_lastExploreColumnCount)
+            scheduleExploreRebuild();
+    });
+
+    m_categoryResizeTimer = new QTimer(this);
+    m_categoryResizeTimer->setSingleShot(true);
+    m_categoryResizeTimer->setInterval(80);
+    connect(m_categoryResizeTimer, &QTimer::timeout, this, [this]() {
+        if (!m_stack || m_stack->currentIndex() != 0 || !m_mainContent
+                || m_mainContent->currentIndex() != 1 || m_topSectionIndex != 0)
+            return;
+        auto *grid = qobject_cast<QGridLayout *>(
+                m_storeCategoryCardsContainer ? m_storeCategoryCardsContainer->layout() : nullptr);
+        if (!grid)
+            return;
+        const int spacing = grid->horizontalSpacing() > 0 ? grid->horizontalSpacing() : 12;
+        const int columns = exploreColumnCount(
+                exploreAvailableWidth(m_storeCategoryCardsContainer, grid), spacing);
+        if (columns == m_lastCategoryColumnCount)
+            return;
+        rebuildStoreCategoryCards();
+    });
+
+    const bool hasCachedFeed = !m_storeTrending.isEmpty() || !m_storePopular.isEmpty()
+            || !m_storeRecent.isEmpty() || !m_storeUpdated.isEmpty();
+    if (!hasCachedFeed)
+        setStoreFeedLoading(true);
 }
 
 void MainWindow::handleOpenFileRequest(const QString &path)
@@ -169,9 +248,7 @@ void MainWindow::setupUi()
 
     m_bannerWidget = new QFrame(this);
     m_bannerWidget->setObjectName(QStringLiteral("featuredBanner"));
-    m_bannerWidget->setMinimumHeight(100);
-    m_bannerWidget->setMaximumHeight(140);
-    m_bannerWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_bannerWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_bannerWidget->setStyleSheet(QStringLiteral(
         "#featuredBanner {"
         "  background-color: #2ea56b;"
@@ -207,7 +284,7 @@ void MainWindow::setupUi()
     rightBannerLayout->setContentsMargins(0, 0, 0, 0);
     rightBannerLayout->setSpacing(8);
     m_bannerIconLabel = new QLabel(m_bannerWidget);
-    m_bannerIconLabel->setFixedSize(96, 96);
+    m_bannerIconLabel->setMinimumSize(64, 64);
     m_bannerIconLabel->setAlignment(Qt::AlignCenter);
     m_bannerIconLabel->setStyleSheet(QStringLiteral("background: rgba(0,0,0,0.08); border-radius: 12px;"));
     const QIcon defaultBannerIcon = QIcon::fromTheme(QStringLiteral("applications-other"));
@@ -285,16 +362,14 @@ void MainWindow::setupUi()
     topNavLayout->addStretch();
     contentLayout->addWidget(m_topNav);
 
-    // Banner slightly narrower than full content width (approx ~70% on large windows)
-    auto *bannerHost = new QWidget(this);
-    auto *bannerHostLayout = new QHBoxLayout(bannerHost);
+    m_bannerHost = new QWidget(this);
+    auto *bannerHostLayout = new QHBoxLayout(m_bannerHost);
     bannerHostLayout->setContentsMargins(0, 0, 0, 0);
     bannerHostLayout->setSpacing(0);
     bannerHostLayout->addStretch();
-    m_bannerWidget->setMaximumWidth(900);
-    bannerHostLayout->addWidget(m_bannerWidget);
+    bannerHostLayout->addWidget(m_bannerWidget, 0, Qt::AlignHCenter);
     bannerHostLayout->addStretch();
-    contentLayout->addWidget(bannerHost);
+    contentLayout->addWidget(m_bannerHost);
 
     m_searchEdit = new QLineEdit(this);
     m_searchEdit->setPlaceholderText(tr("Search apps…"));
@@ -419,10 +494,11 @@ void MainWindow::setupUi()
     // Page 0: main content stack (Flathub explore, Installed, Operations)
     m_mainContent = new QStackedWidget(this);
 
-    // Explore tab: scroll area with grid of cards
-    auto *exploreScroll = new QScrollArea(this);
-    exploreScroll->setWidgetResizable(true);
-    exploreScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Explore tab: centered QGridLayout of cards (Bazaar-style)
+    m_exploreScroll = new QScrollArea(this);
+    m_exploreScroll->setWidgetResizable(true);
+    m_exploreScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_exploreScroll->setMinimumHeight(120);
     m_exploreContainer = new QWidget(this);
     auto *exploreGrid = new QGridLayout(m_exploreContainer);
     exploreGrid->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
@@ -432,9 +508,8 @@ void MainWindow::setupUi()
     m_exploreContainer->setLayout(exploreGrid);
     m_exploreContainer->setMinimumSize(0, 0);
     m_exploreContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
-    exploreScroll->setWidget(m_exploreContainer);
-    exploreScroll->setMinimumHeight(120);
-    m_mainContent->addWidget(exploreScroll);
+    m_exploreScroll->setWidget(m_exploreContainer);
+    m_mainContent->addWidget(m_exploreScroll);
 
     // Flathub categories tab content
     auto *categoriesScroll = new QScrollArea(this);
@@ -495,9 +570,7 @@ void MainWindow::setupUi()
     auto *categoryAppsScroll = new QScrollArea(rightPane);
     categoryAppsScroll->setWidgetResizable(true);
     categoryAppsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_storeCategoryCardsContainer = new QWidget(categoryAppsScroll);
-    m_storeCategoryCardsContainer->setMinimumSize(0, 0);
-    m_storeCategoryCardsContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+    m_storeCategoryCardsContainer = new QWidget(rightPane);
     auto *categoryCardsGrid = new QGridLayout(m_storeCategoryCardsContainer);
     categoryCardsGrid->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
     categoryCardsGrid->setHorizontalSpacing(12);
@@ -508,7 +581,7 @@ void MainWindow::setupUi()
 
     connect(m_storeCategoriesList, &QListWidget::currentTextChanged, this, [this](const QString &text) {
         m_selectedStoreCategory = text.trimmed();
-        rebuildStoreCategoryCards();
+        updateCategoryFeed();
     });
 
     splitter->addWidget(leftPane);
@@ -527,12 +600,23 @@ void MainWindow::setupUi()
     auto *installedLayout = new QVBoxLayout(m_installedContainer);
     installedLayout->setAlignment(Qt::AlignTop);
     m_checkUpdatesButton = new QPushButton(tr("Check for updates"), m_installedContainer);
-    installedLayout->addWidget(m_checkUpdatesButton, 0, Qt::AlignLeft);
+    m_updateAllButton = new QPushButton(tr("Update all"), m_installedContainer);
+    m_updateAllButton->setEnabled(false);
+    auto *updateButtonsRow = new QHBoxLayout;
+    updateButtonsRow->setContentsMargins(0, 0, 0, 0);
+    updateButtonsRow->setSpacing(8);
+    updateButtonsRow->addWidget(m_checkUpdatesButton);
+    updateButtonsRow->addWidget(m_updateAllButton);
+    updateButtonsRow->addStretch();
+    installedLayout->addLayout(updateButtonsRow);
     m_checkUpdatesStatusLabel = new QLabel(m_installedContainer);
     m_checkUpdatesStatusLabel->setWordWrap(true);
     m_checkUpdatesStatusLabel->setStyleSheet(QStringLiteral("color: rgba(200,200,210,0.92);"));
     m_checkUpdatesStatusLabel->hide();
     installedLayout->addWidget(m_checkUpdatesStatusLabel);
+    m_runtimeUpdatesRow = new RuntimeUpdatesRowWidget(m_installedContainer);
+    m_runtimeUpdatesRow->hide();
+    installedLayout->addWidget(m_runtimeUpdatesRow);
     installedScroll->setWidget(m_installedContainer);
     m_mainContent->addWidget(installedScroll);
 
@@ -550,8 +634,13 @@ void MainWindow::setupUi()
     m_detailsWidget = new AppDetailsWidget(m_backend, this);
     connect(m_detailsWidget, &AppDetailsWidget::backClicked, this, [this]() {
         m_stack->setCurrentIndex(0);
+        m_currentDetailsAppId.clear();
+        m_detailsPageAppInfo = {};
+        syncStoreFeedsInstalledState();
+        refreshStoreCardsInstalledUi();
         onTopTabChanged(m_topSectionIndex);
     });
+    connect(m_detailsWidget, &AppDetailsWidget::installRequested, this, &MainWindow::installStoreApp);
     m_stack->addWidget(m_detailsWidget);
 
     // Page 2: settings
@@ -830,6 +919,7 @@ void MainWindow::setupUi()
     connect(m_storeFeedTabs, &QTabBar::currentChanged, this, &MainWindow::onStoreFeedChanged);
     connect(m_settingsNavList, &QListWidget::currentRowChanged, this, &MainWindow::onSettingsSectionChanged);
     connect(m_checkUpdatesButton, &QPushButton::clicked, this, &MainWindow::onCheckForUpdatesTriggered);
+    connect(m_updateAllButton, &QPushButton::clicked, this, &MainWindow::onUpdateAllTriggered);
     connect(delaySearchToggle, &QCheckBox::toggled, this, [this](bool checked) {
         m_delaySearchEnabled = checked;
     });
@@ -895,6 +985,7 @@ void MainWindow::setupUi()
     setWindowFlags(windowFlags() | Qt::WindowMinimizeButtonHint | Qt::WindowMaximizeButtonHint);
     setMinimumSize(360, 420);
     resize(900, 600);
+    updateFeaturedBannerLayout();
 }
 
 void MainWindow::connectBackend()
@@ -902,26 +993,20 @@ void MainWindow::connectBackend()
     connect(m_backend, &FlatpakBackend::installedAppsUpdated,
             this, [this](const QVector<AppInfo> &apps) {
                 m_installedModel->setApps(apps);
+                syncStoreFeedsInstalledState();
                 rebuildInstalledRows();
-                // Refresh details page if we're showing an app whose installed state may have changed
                 if (m_stack->currentIndex() == 1 && !m_currentDetailsAppId.isEmpty()) {
-                    AppInfo info;
+                    bool installed = false;
                     for (const AppInfo &app : apps) {
                         if (app.id == m_currentDetailsAppId) {
-                            info = app;
+                            installed = true;
                             break;
                         }
                     }
-                    if (info.id.isEmpty()) {
-                        for (int i = 0; i < m_exploreModel->rowCount(); ++i) {
-                            if (m_exploreModel->appAt(i).id == m_currentDetailsAppId) {
-                                info = m_exploreModel->appAt(i);
-                                break;
-                            }
-                        }
-                    }
-                    if (!info.id.isEmpty())
-                        m_detailsWidget->setApp(info);
+                    m_detailsPageAppInfo.installed = installed;
+                    m_detailsWidget->setInstalled(installed);
+                } else {
+                    refreshStoreCardsInstalledUi();
                 }
             });
 
@@ -932,6 +1017,7 @@ void MainWindow::connectBackend()
 
     connect(m_backend, &FlatpakBackend::searchResultsUpdated,
             this, [this](const QVector<AppInfo> &apps) {
+                m_showExploreSkeleton = false;
                 m_exploreModel->setApps(apps);
                 scheduleExploreRebuild();
             });
@@ -944,27 +1030,49 @@ void MainWindow::connectBackend()
                          const QVector<AppInfo> &updated) {
                 if (repoId != m_activeStoreTemplate.repoId)
                     return;
+                startupTrace("storeCollectionsUpdated");
+                const bool incomingEmpty = trending.isEmpty() && popular.isEmpty() && recent.isEmpty()
+                        && updated.isEmpty();
+                const bool cachedNonEmpty = !m_storeTrending.isEmpty() || !m_storePopular.isEmpty()
+                        || !m_storeRecent.isEmpty() || !m_storeUpdated.isEmpty();
+                if (incomingEmpty && cachedNonEmpty)
+                    return;
+
                 m_storeTrending = trending;
                 m_storePopular = popular;
                 m_storeRecent = recent;
                 m_storeUpdated = updated;
                 m_storeSuggestions = trending;
+                syncStoreFeedsInstalledState();
+                m_showExploreSkeleton = false;
                 setStoreFeedLoading(false);
                 applyStoreDiscoveryData();
             });
-    connect(m_backend, &FlatpakBackend::storeIconsEnriched,
+    connect(m_backend, &FlatpakBackend::storeCollectionsPatched,
             this, [this](const QString &repoId, const QVector<AppInfo> &apps) {
-                if (repoId != m_activeStoreTemplate.repoId)
+                if (repoId != m_activeStoreTemplate.repoId || apps.isEmpty())
                     return;
                 patchStoreCollectionsIcons(apps);
+                patchStoreCollectionsMetadata(apps);
+                syncStoreFeedsInstalledState();
                 m_exploreModel->patchApps(apps);
-                refreshExploreCardIcons();
+                m_categoryModel->patchApps(apps);
+                if (!tryRefreshExploreInPlace())
+                    scheduleExploreRebuild();
+                else
+                    refreshStoreCardsInstalledUi();
+                if (m_mainContent && m_mainContent->currentIndex() == 1) {
+                    if (!tryRefreshCategoryInPlace())
+                        rebuildStoreCategoryCards();
+                }
                 if (m_topSectionIndex == 0 && m_bannerCurrentIndex >= 0
                     && m_bannerCurrentIndex < m_bannerApps.size()) {
                     for (const AppInfo &app : apps) {
                         if (m_bannerApps.at(m_bannerCurrentIndex).id == app.id) {
                             m_bannerApps[m_bannerCurrentIndex].iconName = app.iconName;
                             m_bannerApps[m_bannerCurrentIndex].iconUrl = app.iconUrl;
+                            if (!app.name.isEmpty())
+                                m_bannerApps[m_bannerCurrentIndex].name = app.name;
                             refreshActiveBannerCard();
                             break;
                         }
@@ -993,60 +1101,53 @@ void MainWindow::connectBackend()
                 const bool hasCachedFeed = !m_storeTrending.isEmpty() || !m_storePopular.isEmpty()
                         || !m_storeRecent.isEmpty() || !m_storeUpdated.isEmpty();
                 if (m_topSectionIndex == 0 && !hasCachedFeed) {
-                    m_exploreModel->setApps({});
-                    scheduleExploreRebuild();
-                    refreshStoreCategoriesPane();
+                    updateExploreSkeleton();
                 }
             });
-    connect(m_backend, &FlatpakBackend::storeCatalogIndexReady,
-            this, [this](const QString &repoId, const QVector<AppInfo> &patches) {
-                if (repoId != m_activeStoreTemplate.repoId || patches.isEmpty())
+    connect(m_backend, &FlatpakBackend::appMetadataEnriched,
+            this, [this](const AppInfo &app) {
+                if (m_stack->currentIndex() != 1 || m_currentDetailsAppId != app.id)
                     return;
-                const auto patchList = [&patches](QVector<AppInfo> &list) {
-                    for (AppInfo &app : list) {
-                        for (const AppInfo &update : patches) {
-                            if (app.id == update.id) {
-                                if (app.name.isEmpty() || app.name == app.id)
-                                    app.name = update.name;
-                                if (app.summary.isEmpty())
-                                    app.summary = update.summary;
-                                if (app.version.isEmpty())
-                                    app.version = update.version;
-                                break;
-                            }
-                        }
-                    }
-                };
-                patchList(m_storeTrending);
-                patchList(m_storePopular);
-                patchList(m_storeRecent);
-                patchList(m_storeUpdated);
-                patchList(m_storeSuggestions);
-                patchStoreCollectionsIcons(patches);
-                m_exploreModel->patchApps(patches);
-                refreshExploreCardIcons();
-                if (m_topSectionIndex == 0)
-                    scheduleExploreRebuild();
+                m_detailsWidget->applyMetadataPatch(app);
             });
 
     connect(m_backend, &FlatpakBackend::operationStarted,
             this, [this](const Operation &op) {
                 m_operationModel->addOrUpdate(op);
                 updateInstalledRowOperation(op, false);
+                updateStoreCardOperation(op, false);
                 updateTrackedInstallFeedback(op, false);
             });
     connect(m_backend, &FlatpakBackend::operationProgress,
             this, [this](const Operation &op) {
                 m_operationModel->addOrUpdate(op);
                 updateInstalledRowOperation(op, false);
+                updateStoreCardOperation(op, false);
                 updateTrackedInstallFeedback(op, false);
             });
     connect(m_backend, &FlatpakBackend::operationFinished,
             this, [this](const Operation &op) {
                 m_operationModel->addOrUpdate(op);
                 updateInstalledRowOperation(op, true);
+                updateStoreCardOperation(op, true);
                 updateTrackedInstallFeedback(op, true);
+                if ((op.type == OperationType::Install || op.type == OperationType::Uninstall)
+                    && op.status == OperationStatus::Succeeded) {
+                    syncStoreFeedsInstalledState();
+                }
                 m_backend->refreshInstalled();
+                if (m_updateAllActive && !m_updateAllCurrentAppId.isEmpty()
+                    && op.appId == m_updateAllCurrentAppId
+                    && (op.type == OperationType::Update || op.type == OperationType::Install)) {
+                    m_updateAllCurrentAppId.clear();
+                    startNextQueuedUpdate();
+                }
+                if (m_updateAllActive && !m_runtimeUpdateCurrentRef.isEmpty()
+                    && op.type == OperationType::Update
+                    && op.appId == m_runtimeUpdateCurrentRef.section(QLatin1Char('/'), 1, 1)) {
+                    m_runtimeUpdateCurrentRef.clear();
+                    startNextQueuedUpdate();
+                }
             });
 
     connect(m_backend, &FlatpakBackend::remotesUpdated,
@@ -1116,12 +1217,24 @@ void MainWindow::connectBackend()
                     m_trackedStatusLabel->setText(tr("Tracked build refresh complete."));
                 m_trackedBuildProjects = m_backend->trackedBuildProjects();
                 patchInstalledTrackedBuildMetadata();
-                const bool userCheck = m_checkForUpdatesPending;
-                QTimer::singleShot(0, this, [this, userCheck]() {
-                    refreshTrackedUpdateBanner();
-                    finishCheckForUpdatesFeedback(userCheck);
-                });
+                completePendingUpdateCheck(m_checkForUpdatesPending);
                 m_backend->refreshInstalled();
+            });
+
+    connect(m_backend, &FlatpakBackend::remoteUpdatesChecked,
+            this, [this](int, int) {
+                refreshAllInstalledRowUpdateStates();
+                refreshRuntimeUpdatesRow();
+                completePendingUpdateCheck(m_checkForUpdatesPending);
+            });
+
+    connect(m_backend, &FlatpakBackend::remoteUpdatesCheckFailed,
+            this, [this](const QString &message) {
+                if (m_checkForUpdatesPending && m_checkUpdatesStatusLabel && !message.isEmpty()) {
+                    m_checkUpdatesStatusLabel->setText(message);
+                    m_checkUpdatesStatusLabel->show();
+                }
+                completePendingUpdateCheck(m_checkForUpdatesPending);
             });
 
     m_trackedBuildProjects = m_backend->trackedBuildProjects();
@@ -1141,8 +1254,8 @@ void MainWindow::clearExploreGridLayout()
 
 void MainWindow::rebuildExploreCards()
 {
-    auto *grid = qobject_cast<QGridLayout *>(m_exploreContainer->layout());
-    if (!grid)
+    auto *grid = qobject_cast<QGridLayout *>(m_exploreContainer ? m_exploreContainer->layout() : nullptr);
+    if (!grid || !m_exploreModel)
         return;
 
     QVector<AppInfo> apps;
@@ -1171,27 +1284,24 @@ void MainWindow::rebuildExploreCards()
         return;
     }
 
-    const bool reflowOnly = sameApps && !apps.isEmpty();
-    if (!reflowOnly)
+    if (!sameApps)
         m_lastExploreModelSignature = signature;
     m_lastExploreColumnCount = columns;
     m_exploreContainer->setUpdatesEnabled(false);
 
-    if (reflowOnly) {
-        while (QLayoutItem *item = grid->takeAt(0)) {
-            if (item->widget())
-                item->widget()->setParent(m_exploreContainer);
-            delete item;
-        }
-    } else {
-        clearExploreGridLayout();
+    while (QLayoutItem *item = grid->takeAt(0)) {
+        if (item->widget())
+            item->widget()->setParent(m_exploreContainer);
+        delete item;
     }
 
     const int count = apps.size();
 
     if (count == 0) {
-        for (AppCardWidget *card : std::as_const(existingCards))
-            card->deleteLater();
+        for (auto it = existingCards.constBegin(); it != existingCards.constEnd(); ++it) {
+            m_storeCardsByAppId.remove(it.key());
+            it.value()->deleteLater();
+        }
         const QString emptyText = m_storeFeedLoading
                 ? tr("Refreshing catalog…")
                 : tr("No results found.");
@@ -1211,14 +1321,16 @@ void MainWindow::rebuildExploreCards()
         AppCardWidget *card = existingCards.take(app.id);
         if (!card) {
             card = new AppCardWidget(m_exploreContainer);
-            connect(card, &AppCardWidget::openDetailsRequested, this, [this, app]() {
-                showDetailsForApp(app.id);
+            const QString appId = app.id;
+            connect(card, &AppCardWidget::openDetailsRequested, this, [this, appId]() {
+                showDetailsForApp(appId);
             });
             connect(card, &AppCardWidget::installRequested, this, [this, app]() {
-                onExploreInstallRequested(app.id);
+                installStoreApp(app);
             });
         }
-        card->setApp(app);
+        card->setApp(app, false);
+        m_storeCardsByAppId.insert(app.id, card);
         const int row = i / columns;
         const int col = i % columns;
         grid->addWidget(card, row, col, Qt::AlignTop | Qt::AlignHCenter);
@@ -1231,19 +1343,199 @@ void MainWindow::rebuildExploreCards()
     grid->setRowStretch(grid->rowCount(), 1);
 
     for (auto it = existingCards.constBegin(); it != existingCards.constEnd(); ++it) {
-        if (!usedIds.contains(it.key()))
+        if (!usedIds.contains(it.key())) {
+            m_storeCardsByAppId.remove(it.key());
             it.value()->deleteLater();
+        }
     }
 
+    const int viewportW = exploreViewportWidth(m_exploreContainer);
+    if (viewportW > 0)
+        m_exploreContainer->setMaximumWidth(viewportW);
+
     m_exploreContainer->setUpdatesEnabled(true);
+    scheduleDeferredExploreIconRefresh();
+}
+
+void MainWindow::scheduleExploreRebuild()
+{
+    if (m_exploreRebuildScheduled)
+        return;
+    m_exploreRebuildScheduled = true;
+    QTimer::singleShot(0, this, [this]() {
+        m_exploreRebuildScheduled = false;
+        rebuildExploreCards();
+    });
+}
+
+QVector<AppInfo> MainWindow::exploreAppsForFeedIndex(int feedIndex) const
+{
+    switch (feedIndex) {
+    case 1:
+        return m_storePopular;
+    case 2:
+        return m_storeRecent;
+    case 3:
+        return m_storeUpdated;
+    case 0:
+    default:
+        return m_storeTrending.isEmpty() ? m_storeSuggestions : m_storeTrending;
+    }
+}
+
+void MainWindow::refreshCurrentStoreFeed()
+{
+    if (!m_exploreModel || m_topSectionIndex != 0 || !m_storeFeedTabs)
+        return;
+
+    const int index = m_storeFeedTabs->currentIndex();
+    if (m_activeStoreTemplate.supportsCategories && index == 4) {
+        QTimer::singleShot(0, this, [this]() { refreshStoreCategoriesPane(); });
+        return;
+    }
+
+    syncStoreFeedsInstalledState();
+    const QVector<AppInfo> apps = exploreAppsForFeedIndex(index);
+    const QString signature = exploreModelSignature(apps);
+    if (signature == m_lastExploreModelSignature && !apps.isEmpty()) {
+        m_exploreModel->setApps(apps);
+        if (!tryRefreshExploreInPlace())
+            scheduleExploreRebuild();
+        return;
+    }
+
+    m_exploreModel->setApps(apps);
+    scheduleExploreRebuild();
+}
+
+void MainWindow::scheduleDeferredExploreIconRefresh()
+{
+    if (m_exploreIconRefreshScheduled)
+        return;
+    m_exploreIconRefreshScheduled = true;
+    QTimer::singleShot(0, this, [this]() {
+        m_exploreIconRefreshScheduled = false;
+        m_exploreIconRefreshQueue.clear();
+        auto *grid = qobject_cast<QGridLayout *>(m_exploreContainer ? m_exploreContainer->layout() : nullptr);
+        if (!grid)
+            return;
+        for (int i = 0; i < grid->count(); ++i) {
+            if (auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget()))
+                m_exploreIconRefreshQueue.append(card);
+        }
+        m_exploreIconRefreshIndex = 0;
+        if (m_exploreIconRefreshQueue.isEmpty())
+            return;
+
+        if (!m_exploreIconRefreshTimer) {
+            m_exploreIconRefreshTimer = new QTimer(this);
+            m_exploreIconRefreshTimer->setInterval(16);
+            connect(m_exploreIconRefreshTimer, &QTimer::timeout, this, [this]() {
+                constexpr int kBatchSize = 6;
+                for (int n = 0; n < kBatchSize && m_exploreIconRefreshIndex < m_exploreIconRefreshQueue.size();
+                     ++n, ++m_exploreIconRefreshIndex) {
+                    m_exploreIconRefreshQueue.at(m_exploreIconRefreshIndex)->refreshIcon();
+                }
+                if (m_exploreIconRefreshIndex >= m_exploreIconRefreshQueue.size())
+                    m_exploreIconRefreshTimer->stop();
+            });
+        }
+        if (!m_exploreIconRefreshTimer->isActive())
+            m_exploreIconRefreshTimer->start();
+    });
+}
+
+void MainWindow::scheduleExploreResizeReflow()
+{
+    if (m_exploreResizeTimer)
+        m_exploreResizeTimer->start();
+}
+
+void MainWindow::scheduleCategoryResizeReflow()
+{
+    if (m_categoryResizeTimer)
+        m_categoryResizeTimer->start();
+}
+
+bool MainWindow::tryRefreshExploreInPlace()
+{
+    auto *grid = qobject_cast<QGridLayout *>(m_exploreContainer ? m_exploreContainer->layout() : nullptr);
+    if (!grid || !m_exploreModel)
+        return false;
+
+    QVector<AppInfo> apps;
+    apps.reserve(m_exploreModel->rowCount());
+    for (int i = 0; i < m_exploreModel->rowCount(); ++i)
+        apps.append(m_exploreModel->appAt(i));
+    if (apps.isEmpty())
+        return false;
+
+    const QString signature = exploreModelSignature(apps);
+    const int spacing = grid->horizontalSpacing() > 0 ? grid->horizontalSpacing() : 12;
+    const int columns = exploreColumnCount(exploreAvailableWidth(m_exploreContainer, grid), spacing);
+    if (signature != m_lastExploreModelSignature || columns != m_lastExploreColumnCount)
+        return false;
+
+    QHash<QString, AppCardWidget *> cardsById;
+    for (int i = 0; i < grid->count(); ++i) {
+        if (auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget()))
+            cardsById.insert(card->appId(), card);
+    }
+    for (const AppInfo &app : apps) {
+        if (AppCardWidget *card = cardsById.value(app.id))
+            card->setApp(app);
+    }
+    return true;
+}
+
+QString MainWindow::exploreModelSignature(const QVector<AppInfo> &apps) const
+{
+    QStringList ids;
+    ids.reserve(apps.size());
+    for (const AppInfo &app : apps) {
+        if (!app.id.isEmpty())
+            ids.append(app.id);
+    }
+    return ids.join(QLatin1Char('|'));
+}
+
+void MainWindow::updateExploreSkeleton()
+{
+    if (!m_showExploreSkeleton || !m_storeFeedLoading)
+        return;
+    scheduleExploreRebuild();
+}
+
+void MainWindow::patchStoreCollectionsMetadata(const QVector<AppInfo> &updates)
+{
+    const auto patchList = [&updates](QVector<AppInfo> &list) {
+        for (AppInfo &app : list) {
+            for (const AppInfo &update : updates) {
+                if (app.id != update.id)
+                    continue;
+                if (!update.name.isEmpty() && (app.name.isEmpty() || app.name == app.id))
+                    app.name = update.name;
+                if (!update.summary.isEmpty() && app.summary.isEmpty())
+                    app.summary = update.summary;
+                if (!update.version.isEmpty() && app.version.isEmpty())
+                    app.version = update.version;
+                break;
+            }
+        }
+    };
+    patchList(m_storeTrending);
+    patchList(m_storePopular);
+    patchList(m_storeRecent);
+    patchList(m_storeUpdated);
+    patchList(m_storeSuggestions);
+    patchList(m_storeCategoryPool);
 }
 
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
-    QTimer::singleShot(0, this, [this]() {
-        scheduleExploreRebuild();
-    });
+    startupTrace("showEvent");
+    updateFeaturedBannerLayout();
     if (!m_deferredStartupDone) {
         m_deferredStartupDone = true;
         QTimer::singleShot(0, this, &MainWindow::runDeferredStartup);
@@ -1256,7 +1548,7 @@ void MainWindow::runDeferredStartup()
     QTimer::singleShot(250, this, [this]() {
         m_backend->listRemotes();
     });
-    QTimer::singleShot(150, this, [this]() {
+    QTimer::singleShot(400, this, [this]() {
         beginStoreRefresh();
     });
     QTimer::singleShot(2000, this, [this]() {
@@ -1281,25 +1573,15 @@ void MainWindow::applyStoreDiscoveryData()
     refreshFeaturedBanner(bannerPool);
 
     if (m_topSectionIndex == 0)
-        onStoreFeedChanged(m_storeFeedTabs->currentIndex());
-
-    if (m_activeStoreTemplate.supportsCategories && m_storeFeedTabs
-        && m_storeFeedTabs->currentIndex() == 4) {
-        QTimer::singleShot(0, this, [this]() {
-            refreshStoreCategoriesPane();
-        });
-    }
+        refreshCurrentStoreFeed();
 }
 
-void MainWindow::scheduleExploreRebuild()
+void MainWindow::updateCategoryFeed()
 {
-    if (m_exploreRebuildScheduled)
+    if (!m_categoryModel)
         return;
-    m_exploreRebuildScheduled = true;
-    QTimer::singleShot(0, this, [this]() {
-        m_exploreRebuildScheduled = false;
-        rebuildExploreCards();
-    });
+    m_categoryModel->setApps(filteredCategoryApps());
+    rebuildStoreCategoryCards();
 }
 
 void MainWindow::patchStoreCollectionsIcons(const QVector<AppInfo> &updates)
@@ -1324,49 +1606,158 @@ void MainWindow::patchStoreCollectionsIcons(const QVector<AppInfo> &updates)
     patchList(m_bannerApps);
 }
 
-void MainWindow::refreshExploreCardIcons()
+QVector<AppInfo> MainWindow::filteredCategoryApps() const
 {
-    auto *grid = qobject_cast<QGridLayout *>(m_exploreContainer ? m_exploreContainer->layout() : nullptr);
+    const QString category = m_selectedStoreCategory.trimmed();
+    QVector<AppInfo> filtered;
+    for (const AppInfo &app : m_storeCategoryPool) {
+        bool match = false;
+        for (const QString &cat : app.categories) {
+            if (cat.compare(category, Qt::CaseInsensitive) == 0) {
+                match = true;
+                break;
+            }
+        }
+        if (!match && !category.isEmpty()) {
+            const QString haystack = (app.name + QLatin1Char(' ') + app.summary).toLower();
+            match = haystack.contains(category.toLower());
+        }
+        if (category.isEmpty() || match)
+            filtered.append(app);
+    }
+    return filtered;
+}
+
+bool MainWindow::tryRefreshCategoryInPlace()
+{
+    auto *grid = m_storeCategoryCardsContainer
+            ? qobject_cast<QGridLayout *>(m_storeCategoryCardsContainer->layout())
+            : nullptr;
+    if (!grid)
+        return false;
+
+    const QVector<AppInfo> filtered = filteredCategoryApps();
+    const QString signature = m_selectedStoreCategory.trimmed() + QLatin1Char('|')
+            + exploreModelSignature(filtered);
+    const int spacing = grid->horizontalSpacing() > 0 ? grid->horizontalSpacing() : 12;
+    const int columns = exploreColumnCount(
+            exploreAvailableWidth(m_storeCategoryCardsContainer, grid), spacing);
+    if (filtered.isEmpty() || signature != m_lastCategorySignature
+            || columns != m_lastCategoryColumnCount)
+        return false;
+
+    QHash<QString, AppCardWidget *> cardsById;
+    for (int i = 0; i < grid->count(); ++i) {
+        if (auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget()))
+            cardsById.insert(card->appId(), card);
+    }
+    for (const AppInfo &app : filtered) {
+        if (AppCardWidget *card = cardsById.value(app.id))
+            card->setApp(app);
+    }
+    return true;
+}
+
+void MainWindow::rebuildStoreCategoryCards()
+{
+    auto *grid = m_storeCategoryCardsContainer
+            ? qobject_cast<QGridLayout *>(m_storeCategoryCardsContainer->layout())
+            : nullptr;
     if (!grid)
         return;
 
-    QHash<QString, AppInfo> byId;
-    const auto addApps = [&byId](const QVector<AppInfo> &list) {
-        for (const AppInfo &app : list) {
-            if (!app.id.isEmpty())
-                byId.insert(app.id, app);
-        }
-    };
-    for (int row = 0; row < m_exploreModel->rowCount(); ++row)
-        addApps({m_exploreModel->appAt(row)});
-    addApps(m_storeTrending);
-    addApps(m_storePopular);
-    addApps(m_storeRecent);
-    addApps(m_storeUpdated);
-    addApps(m_storeCategoryPool);
+    const QVector<AppInfo> filtered = filteredCategoryApps();
+    const QString signature = m_selectedStoreCategory.trimmed() + QLatin1Char('|')
+            + exploreModelSignature(filtered);
+    const bool sameApps = (signature == m_lastCategorySignature);
 
+    const int spacing = grid->horizontalSpacing() > 0 ? grid->horizontalSpacing() : 12;
+    const int availableWidth = exploreAvailableWidth(m_storeCategoryCardsContainer, grid);
+    const int columns = exploreColumnCount(availableWidth, spacing);
+
+    QHash<QString, AppCardWidget *> existingCards;
     for (int i = 0; i < grid->count(); ++i) {
-        auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget());
-        if (!card)
-            continue;
-        const auto it = byId.constFind(card->appId());
-        if (it != byId.cend())
-            card->patchIcon(it.value());
+        if (auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget()))
+            existingCards.insert(card->appId(), card);
     }
 
-    if (m_storeCategoryCardsContainer) {
-        auto *categoryGrid = qobject_cast<QGridLayout *>(m_storeCategoryCardsContainer->layout());
-        if (categoryGrid) {
-            for (int i = 0; i < categoryGrid->count(); ++i) {
-                auto *card = qobject_cast<AppCardWidget *>(categoryGrid->itemAt(i)->widget());
-                if (!card)
-                    continue;
-                const auto it = byId.constFind(card->appId());
-                if (it != byId.cend())
-                    card->patchIcon(it.value());
-            }
+    if (sameApps && !filtered.isEmpty() && columns == m_lastCategoryColumnCount) {
+        for (const AppInfo &app : filtered) {
+            if (AppCardWidget *card = existingCards.value(app.id))
+                card->setApp(app);
+        }
+        return;
+    }
+
+    const bool reflowOnly = sameApps && !filtered.isEmpty();
+    if (!reflowOnly)
+        m_lastCategorySignature = signature;
+    m_lastCategoryColumnCount = columns;
+    m_storeCategoryCardsContainer->setUpdatesEnabled(false);
+
+    if (reflowOnly) {
+        while (QLayoutItem *item = grid->takeAt(0)) {
+            if (item->widget())
+                item->widget()->setParent(m_storeCategoryCardsContainer);
+            delete item;
+        }
+    } else {
+        while (grid->count()) {
+            auto *item = grid->takeAt(0);
+            if (item->widget())
+                item->widget()->deleteLater();
+            delete item;
         }
     }
+
+    if (filtered.isEmpty()) {
+        for (AppCardWidget *card : std::as_const(existingCards))
+            card->deleteLater();
+        auto *label = new QLabel(tr("No apps found for this category."), m_storeCategoryCardsContainer);
+        label->setAlignment(Qt::AlignCenter);
+        label->setStyleSheet(QStringLiteral("color: gray; padding: 20px;"));
+        grid->addWidget(label, 0, 0, 1, columns);
+        m_storeCategoryCardsContainer->setUpdatesEnabled(true);
+        return;
+    }
+
+    QSet<QString> usedIds;
+    for (int i = 0; i < filtered.size(); ++i) {
+        const AppInfo &app = filtered.at(i);
+        usedIds.insert(app.id);
+
+        AppCardWidget *card = existingCards.take(app.id);
+        if (!card) {
+            card = new AppCardWidget(m_storeCategoryCardsContainer);
+            const QString appId = app.id;
+            connect(card, &AppCardWidget::openDetailsRequested, this, [this, appId]() {
+                showDetailsForApp(appId);
+            });
+            connect(card, &AppCardWidget::installRequested, this, [this, app]() {
+                installStoreApp(app);
+            });
+        }
+        card->setApp(app);
+        m_storeCardsByAppId.insert(app.id, card);
+        const int row = i / columns;
+        const int col = i % columns;
+        grid->addWidget(card, row, col, Qt::AlignTop | Qt::AlignHCenter);
+    }
+
+    for (int col = 0; col < columns; ++col)
+        grid->setColumnStretch(col, 0);
+    for (auto it = existingCards.constBegin(); it != existingCards.constEnd(); ++it) {
+        if (!usedIds.contains(it.key())) {
+            m_storeCardsByAppId.remove(it.key());
+            it.value()->deleteLater();
+        }
+    }
+
+    const int categoryViewportW = exploreViewportWidth(m_storeCategoryCardsContainer);
+    if (categoryViewportW > 0)
+        m_storeCategoryCardsContainer->setMaximumWidth(categoryViewportW);
+
+    m_storeCategoryCardsContainer->setUpdatesEnabled(true);
 }
 
 void MainWindow::rebuildInstalledRows()
@@ -1378,9 +1769,9 @@ void MainWindow::rebuildInstalledRows()
     m_installedContainer->setUpdatesEnabled(false);
     m_installedRowsByAppId.clear();
 
-    // Keep check-for-updates header rows pinned (button + status label at indices 0–1).
-    while (vbox->count() > 2) {
-        QLayoutItem *item = vbox->takeAt(2);
+    // Keep header rows pinned (buttons row, status label, runtime summary at indices 0–2).
+    while (vbox->count() > 3) {
+        QLayoutItem *item = vbox->takeAt(3);
         if (!item)
             break;
         if (QWidget *widget = item->widget())
@@ -1432,6 +1823,176 @@ void MainWindow::updateInstalledRowOperation(const Operation &op, bool finished)
         else
             row->setUpdateInProgress(false);
     }
+}
+
+QSet<QString> MainWindow::installedAppIds() const
+{
+    QSet<QString> ids;
+    for (int i = 0; i < m_installedModel->rowCount(); ++i)
+        ids.insert(m_installedModel->appAt(i).id);
+    return ids;
+}
+
+void MainWindow::syncStoreFeedsInstalledState()
+{
+    const QSet<QString> ids = installedAppIds();
+    const auto markList = [&ids](QVector<AppInfo> &list) {
+        for (AppInfo &app : list)
+            app.installed = ids.contains(app.id);
+    };
+    markList(m_storeTrending);
+    markList(m_storePopular);
+    markList(m_storeRecent);
+    markList(m_storeUpdated);
+    markList(m_storeSuggestions);
+    markList(m_storeCategoryPool);
+    for (AppInfo &app : m_bannerApps)
+        app.installed = ids.contains(app.id);
+
+    if (m_exploreModel)
+        m_exploreModel->syncInstalledFlags(ids);
+    if (m_categoryModel)
+        m_categoryModel->syncInstalledFlags(ids);
+}
+
+AppInfo MainWindow::lookupStoreFeedApp(const QString &appId) const
+{
+    if (appId.isEmpty())
+        return {};
+
+    const QVector<AppInfo> *lists[] = {&m_storeTrending, &m_storePopular, &m_storeRecent, &m_storeUpdated,
+                                         &m_storeSuggestions, &m_storeCategoryPool};
+    for (const QVector<AppInfo> *list : lists) {
+        for (const AppInfo &app : *list) {
+            if (app.id == appId)
+                return app;
+        }
+    }
+    return {};
+}
+
+AppCardWidget *MainWindow::storeCardForAppId(const QString &appId) const
+{
+    if (appId.isEmpty())
+        return nullptr;
+
+    if (AppCardWidget *card = m_storeCardsByAppId.value(appId).data())
+        return card;
+
+    const auto findInGrid = [&appId](QWidget *container) -> AppCardWidget * {
+        if (!container)
+            return nullptr;
+        auto *grid = qobject_cast<QGridLayout *>(container->layout());
+        if (!grid)
+            return nullptr;
+        for (int i = 0; i < grid->count(); ++i) {
+            if (auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget())) {
+                if (card->appId() == appId)
+                    return card;
+            }
+        }
+        return nullptr;
+    };
+
+    if (AppCardWidget *card = findInGrid(m_exploreContainer))
+        return card;
+    return findInGrid(m_storeCategoryCardsContainer);
+}
+
+void MainWindow::pruneStaleStoreCards()
+{
+    QStringList stale;
+    stale.reserve(m_storeCardsByAppId.size());
+    for (auto it = m_storeCardsByAppId.constBegin(); it != m_storeCardsByAppId.constEnd(); ++it) {
+        if (!it.value())
+            stale.append(it.key());
+    }
+    for (const QString &id : stale)
+        m_storeCardsByAppId.remove(id);
+}
+
+void MainWindow::refreshStoreCardsInstalledUi()
+{
+    pruneStaleStoreCards();
+    const QSet<QString> ids = installedAppIds();
+
+    const auto refreshGrid = [&](QWidget *container) {
+        if (!container)
+            return;
+        auto *grid = qobject_cast<QGridLayout *>(container->layout());
+        if (!grid)
+            return;
+        for (int i = 0; i < grid->count(); ++i) {
+            auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget());
+            if (!card)
+                continue;
+            AppInfo info;
+            bool found = false;
+            for (int row = 0; row < m_exploreModel->rowCount(); ++row) {
+                const AppInfo candidate = m_exploreModel->appAt(row);
+                if (candidate.id == card->appId()) {
+                    info = candidate;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found && m_categoryModel) {
+                for (int row = 0; row < m_categoryModel->rowCount(); ++row) {
+                    const AppInfo candidate = m_categoryModel->appAt(row);
+                    if (candidate.id == card->appId()) {
+                        info = candidate;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                info = lookupStoreFeedApp(card->appId());
+                if (info.id.isEmpty())
+                    info.id = card->appId();
+            }
+            const bool installed = ids.contains(card->appId());
+            info.installed = installed;
+            if (!found && info.name.isEmpty() && info.summary.isEmpty()) {
+                card->setInstalled(installed);
+                if (!info.id.isEmpty())
+                    m_storeCardsByAppId.insert(info.id, card);
+                continue;
+            }
+            card->setApp(info, false);
+            if (!info.id.isEmpty())
+                m_storeCardsByAppId.insert(info.id, card);
+        }
+    };
+
+    refreshGrid(m_exploreContainer);
+    refreshGrid(m_storeCategoryCardsContainer);
+}
+
+void MainWindow::updateStoreCardOperation(const Operation &op, bool finished)
+{
+    pruneStaleStoreCards();
+    AppCardWidget *card = m_storeCardsByAppId.value(op.appId).data();
+    if (!card)
+        card = storeCardForAppId(op.appId);
+    if (!card)
+        return;
+
+    if (op.type == OperationType::Install) {
+        if (!finished && op.status == OperationStatus::Running)
+            card->setInstallInProgress(true, op.progress);
+        else
+            card->setInstallInProgress(false);
+        return;
+    }
+
+    if (op.type == OperationType::Uninstall && finished) {
+        card->setInstallInProgress(false);
+        if (op.status == OperationStatus::Succeeded)
+            card->setInstalled(false);
+    }
+    if (finished)
+        m_storeCardsByAppId.insert(op.appId, card);
 }
 
 void MainWindow::beginTrackedInstallFeedback(const QString &appId, const QString &releaseTag)
@@ -1576,6 +2137,8 @@ void MainWindow::onTopTabChanged(int index)
     }
 
     if (index == 3) {
+        if (m_bannerHost)
+            m_bannerHost->setVisible(false);
         if (m_bannerWidget)
             m_bannerWidget->setVisible(false);
         m_searchEdit->setVisible(false);
@@ -1586,8 +2149,12 @@ void MainWindow::onTopTabChanged(int index)
         return;
     }
 
+    if (m_bannerHost)
+        m_bannerHost->setVisible(index == 0);
     if (m_bannerWidget)
         m_bannerWidget->setVisible(index == 0);
+    if (index == 0)
+        updateFeaturedBannerLayout();
     m_searchEdit->setVisible(index == 1);
     m_storeTemplateTabs->setVisible(index == 0);
     m_storeFeedTabs->setVisible(index == 0);
@@ -1643,22 +2210,8 @@ void MainWindow::onStoreFeedChanged(int index)
     }
 
     m_mainContent->setCurrentIndex(0); // Explore feed cards
-    switch (index) {
-    case 1:
-        m_exploreModel->setApps(m_storePopular);
-        break;
-    case 2:
-        m_exploreModel->setApps(m_storeRecent);
-        break;
-    case 3:
-        m_exploreModel->setApps(m_storeUpdated);
-        break;
-    case 0:
-    default:
-        m_exploreModel->setApps(m_storeTrending.isEmpty() ? m_storeSuggestions : m_storeTrending);
-        break;
-    }
-    scheduleExploreRebuild();
+    updateExploreSkeleton();
+    refreshCurrentStoreFeed();
 }
 
 void MainWindow::onSettingsSectionChanged(int row)
@@ -1688,13 +2241,16 @@ void MainWindow::showDetailsForApp(const QString &appId)
             break;
         }
     }
+    if (info.id.isEmpty() && m_categoryModel) {
+        for (int i = 0; i < m_categoryModel->rowCount(); ++i) {
+            if (m_categoryModel->appAt(i).id == appId) {
+                info = m_categoryModel->appAt(i);
+                break;
+            }
+        }
+    }
     if (!info.id.isEmpty()) {
-        prepareDetailsAppInfo(info);
-        m_searchEdit->setVisible(false);
-        m_storeTemplateTabs->setVisible(false);
-        m_storeFeedTabs->setVisible(false);
-        m_detailsWidget->setApp(info);
-        m_stack->setCurrentIndex(1);
+        presentAppDetailsPage(info);
         return;
     }
     for (int i = 0; i < m_installedModel->rowCount(); ++i) {
@@ -1703,29 +2259,81 @@ void MainWindow::showDetailsForApp(const QString &appId)
             break;
         }
     }
-    if (!info.id.isEmpty()) {
-        prepareDetailsAppInfo(info);
-        m_searchEdit->setVisible(false);
-        m_storeTemplateTabs->setVisible(false);
-        m_storeFeedTabs->setVisible(false);
-        m_detailsWidget->setApp(info);
-        m_stack->setCurrentIndex(1);
-    }
+    if (!info.id.isEmpty())
+        presentAppDetailsPage(info);
 }
 
-void MainWindow::onExploreInstallRequested(const QString &appId)
+void MainWindow::presentAppDetailsPage(const AppInfo &info)
 {
-    QString repoId = m_activeStoreTemplate.repoId;
-    for (int i = 0; i < m_exploreModel->rowCount(); ++i) {
-        const AppInfo app = m_exploreModel->appAt(i);
-        if (app.id == appId) {
-            if (!app.repoId.isEmpty())
-                repoId = app.repoId;
-            break;
+    AppInfo details = info;
+    prepareDetailsAppInfo(details);
+    m_detailsPageAppInfo = details;
+    m_searchEdit->setVisible(false);
+    m_storeTemplateTabs->setVisible(false);
+    m_storeFeedTabs->setVisible(false);
+    if (m_bannerHost)
+        m_bannerHost->setVisible(false);
+    if (m_bannerWidget)
+        m_bannerWidget->setVisible(false);
+    m_detailsWidget->setApp(details);
+    m_stack->setCurrentIndex(1);
+}
+
+void MainWindow::installStoreApp(const AppInfo &info)
+{
+    if (!m_backend || info.id.isEmpty())
+        return;
+
+    AppInfo app = info;
+    if (app.repoId.isEmpty()) {
+        app.repoId = m_activeStoreTemplate.repoId.isEmpty()
+                ? QStringLiteral("flathub")
+                : m_activeStoreTemplate.repoId;
+    }
+
+    const auto installTracked = [this, &app](const TrackedBuildProject &project,
+                                             const QString &assetUrl,
+                                             const QString &releaseTag) {
+        if (assetUrl.trimmed().isEmpty())
+            return false;
+        m_backend->installTrackedBuildAsset(project, assetUrl, app.id, releaseTag);
+        return true;
+    };
+
+    if (!app.trackedStableAssetUrl.isEmpty()) {
+        for (const TrackedBuildProject &project : m_backend->trackedBuildProjects()) {
+            if (project.linkedAppId.trimmed() == app.id
+                && installTracked(project, app.trackedStableAssetUrl, app.trackedStableVersion))
+                return;
         }
     }
-    m_backend->install(appId, repoId);
-    showDetailsForApp(appId);
+
+    for (const TrackedBuildProject &project : m_backend->trackedBuildProjects()) {
+        if (project.linkedAppId.trimmed() != app.id)
+            continue;
+        if (installTracked(project, project.latestStableAssetUrl, project.latestStableVersion))
+            return;
+        break;
+    }
+
+    const std::optional<ParsedGitRepo> parsed = TrackedBuildMatcher::parsedGitRepoFromApp(app);
+    if (parsed) {
+        if (const TrackedBuildProject *existing = TrackedBuildMatcher::findProjectByRepo(
+                    m_backend->trackedBuildProjects(), *parsed)) {
+            if (installTracked(*existing, existing->latestStableAssetUrl, existing->latestStableVersion))
+                return;
+        }
+        openTrackedBuildDialogForApp(app);
+        if (m_storeStatusLabel) {
+            m_storeStatusLabel->setStyleSheet(QStringLiteral("color: rgba(200,200,210,0.92);"));
+            m_storeStatusLabel->setText(
+                    tr("Link this GitHub repo under Settings → Tracked Builds, then install from the dialog."));
+            m_storeStatusLabel->show();
+        }
+        return;
+    }
+
+    m_backend->install(app.id, app.repoId);
 }
 
 void MainWindow::onInstalledUninstallRequested(const QString &appId)
@@ -1738,16 +2346,174 @@ void MainWindow::onInstalledUninstallRequested(const QString &appId)
 void MainWindow::onCheckForUpdatesTriggered()
 {
     m_checkForUpdatesPending = true;
+    m_pendingUpdateCheckTasks = 2;
     if (m_checkUpdatesButton) {
         m_checkUpdatesButton->setEnabled(false);
         m_checkUpdatesButton->setText(tr("Checking…"));
     }
     if (m_checkUpdatesStatusLabel) {
         m_checkUpdatesStatusLabel->setText(
-                tr("Checking tracked build feeds (GitHub / GitLab / Codeberg)…"));
+                tr("Checking Flatpak remotes and tracked build feeds…"));
         m_checkUpdatesStatusLabel->show();
     }
+    m_backend->refreshRemoteUpdates();
     m_backend->refreshTrackedBuilds();
+}
+
+bool MainWindow::appHasPendingUpdate(const AppInfo &app) const
+{
+    if (!m_backend || app.id.isEmpty())
+        return false;
+
+    for (const TrackedBuildProject &project : m_backend->trackedBuildProjects()) {
+        if (project.linkedAppId.trimmed() != app.id)
+            continue;
+        if (TrackedBuildClassifier::trackedReleaseUpdateTarget(app.version, project, nullptr, nullptr))
+            return true;
+    }
+    return m_backend->hasRemoteUpdate(app.id);
+}
+
+void MainWindow::refreshUpdateAllButtonState()
+{
+    if (!m_updateAllButton || m_updateAllActive)
+        return;
+    const TrackedUpdateSummary summary = summarizeInstalledUpdates();
+    m_updateAllButton->setEnabled((summary.trackedPendingCount + summary.flatpakPendingCount
+                                   + summary.runtimePendingCount)
+                                  > 0);
+}
+
+void MainWindow::onUpdateAllTriggered()
+{
+    if (m_updateAllActive || !m_backend || !m_installedModel)
+        return;
+
+    m_updateAllQueue.clear();
+    m_runtimeUpdateQueue.clear();
+    m_runtimeUpdateCurrentRef.clear();
+    for (int i = 0; i < m_installedModel->rowCount(); ++i) {
+        const AppInfo app = m_installedModel->appAt(i);
+        if (appHasPendingUpdate(app))
+            m_updateAllQueue.append(app.id);
+    }
+    m_runtimeUpdateQueue = m_backend->runtimeUpdates();
+
+    if (m_updateAllQueue.isEmpty() && m_runtimeUpdateQueue.isEmpty()) {
+        if (m_checkUpdatesStatusLabel) {
+            m_checkUpdatesStatusLabel->setStyleSheet(
+                    QStringLiteral("color: rgba(200,200,210,0.92);"));
+            m_checkUpdatesStatusLabel->setText(tr("All installed apps and runtimes are up to date."));
+            m_checkUpdatesStatusLabel->show();
+        }
+        return;
+    }
+
+    m_updateAllActive = true;
+    if (m_updateAllButton)
+        m_updateAllButton->setEnabled(false);
+    if (m_checkUpdatesButton)
+        m_checkUpdatesButton->setEnabled(false);
+    if (m_checkUpdatesStatusLabel) {
+        m_checkUpdatesStatusLabel->setStyleSheet(
+                QStringLiteral("color: rgba(120, 180, 255, 0.95); font-weight: 500;"));
+        const int appCount = m_updateAllQueue.size();
+        const int runtimeCount = m_backend->runtimeUpdateCount();
+        if (appCount > 0 && runtimeCount > 0) {
+            m_checkUpdatesStatusLabel->setText(
+                    tr("Updating %1 app(s) and %2 runtime(s)…").arg(appCount).arg(runtimeCount));
+        } else if (runtimeCount > 0) {
+            m_checkUpdatesStatusLabel->setText(
+                    runtimeCount == 1 ? tr("Updating 1 runtime…")
+                                      : tr("Updating %1 runtimes…").arg(runtimeCount));
+        } else {
+            m_checkUpdatesStatusLabel->setText(tr("Updating %1 app(s)…").arg(appCount));
+        }
+        m_checkUpdatesStatusLabel->show();
+    }
+    refreshRuntimeUpdatesRow();
+    startNextQueuedUpdate();
+}
+
+void MainWindow::startNextQueuedUpdate()
+{
+    if (!m_updateAllActive) {
+        return;
+    }
+
+    if (m_updateAllQueue.isEmpty() && m_runtimeUpdateQueue.isEmpty()) {
+        finishUpdateAll();
+        return;
+    }
+
+    if (m_updateAllQueue.isEmpty()) {
+        const AppInfo entry = m_runtimeUpdateQueue.takeFirst();
+        if (entry.installedFlatpakRef.isEmpty()) {
+            startNextQueuedUpdate();
+            return;
+        }
+        m_runtimeUpdateCurrentRef = entry.installedFlatpakRef;
+        if (m_checkUpdatesStatusLabel) {
+            const QString name = entry.name.isEmpty() ? entry.id : entry.name;
+            m_checkUpdatesStatusLabel->setText(
+                    tr("Updating runtime %1 (%2 remaining)…")
+                            .arg(name, QString::number(m_runtimeUpdateQueue.size())));
+        }
+        refreshRuntimeUpdatesRow();
+        const FlatpakScope scope = flatpakScopeFromString(entry.installationScope);
+        m_backend->updateInstalledFlatpakRef(entry.installedFlatpakRef, scope);
+        return;
+    }
+
+    const QString appId = m_updateAllQueue.takeFirst();
+    AppInfo app;
+    for (int i = 0; i < m_installedModel->rowCount(); ++i) {
+        if (m_installedModel->appAt(i).id == appId) {
+            app = m_installedModel->appAt(i);
+            break;
+        }
+    }
+
+    if (app.id.isEmpty() || !appHasPendingUpdate(app)) {
+        startNextQueuedUpdate();
+        return;
+    }
+
+    if (m_checkUpdatesStatusLabel) {
+        m_checkUpdatesStatusLabel->setText(
+                tr("Updating %1 (%2 remaining)…")
+                        .arg(app.name.isEmpty() ? app.id : app.name,
+                             QString::number(m_updateAllQueue.size())));
+    }
+
+    m_updateAllCurrentAppId = app.id;
+    m_backend->update(app.id, app.version);
+}
+
+void MainWindow::finishUpdateAll()
+{
+    m_updateAllActive = false;
+    m_updateAllQueue.clear();
+    m_updateAllCurrentAppId.clear();
+    m_runtimeUpdateQueue.clear();
+    m_runtimeUpdateCurrentRef.clear();
+    refreshRuntimeUpdatesRow();
+
+    if (m_checkUpdatesButton) {
+        m_checkUpdatesButton->setEnabled(true);
+        m_checkUpdatesButton->setText(tr("Check for updates"));
+    }
+
+    m_backend->refreshRemoteUpdates();
+    refreshInstalledUpdateBanner();
+    refreshUpdateAllButtonState();
+
+    if (m_checkUpdatesStatusLabel) {
+        m_checkUpdatesStatusLabel->setStyleSheet(
+                QStringLiteral("color: rgba(100, 200, 140, 0.95); font-weight: 500;"));
+        m_checkUpdatesStatusLabel->setText(tr("Update all finished."));
+        m_checkUpdatesStatusLabel->show();
+    }
 }
 
 void MainWindow::onClearLeftoverUserDataTriggered()
@@ -1846,6 +2612,64 @@ void MainWindow::refreshAllData()
         m_backend->search(query);
 }
 
+void MainWindow::updateFeaturedBannerLayout()
+{
+    if (!m_bannerWidget || !m_bannerHost || m_topSectionIndex != 0 || !m_bannerWidget->isVisible())
+        return;
+
+    constexpr int kBannerMaxWidth = 920;
+    constexpr int kBannerMaxHeight = 180;
+
+    const int spacing = 12;
+    const int viewportW = m_exploreScroll
+            ? exploreViewportWidth(m_exploreContainer)
+            : exploreViewportWidth(m_bannerHost);
+    const int columns = exploreColumnCount(viewportW, spacing);
+    int bannerW = exploreGridPixelWidth(columns, spacing);
+    bannerW = qBound(260, bannerW, kBannerMaxWidth);
+    const int bannerH = qBound(96, static_cast<int>(bannerW * 0.20), kBannerMaxHeight);
+
+    m_bannerWidget->setMaximumWidth(bannerW);
+    m_bannerWidget->setMinimumWidth(bannerW);
+    m_bannerWidget->setFixedHeight(bannerH);
+
+    if (auto *bannerLayout = m_bannerWidget->layout()) {
+        const int hMargin = qBound(12, bannerH / 6, 28);
+        const int vMargin = qBound(10, bannerH / 7, 22);
+        bannerLayout->setContentsMargins(hMargin, vMargin, hMargin, vMargin);
+    }
+
+    const int arrowSize = qBound(28, bannerH / 4, 44);
+    if (m_bannerPrevButton)
+        m_bannerPrevButton->setFixedSize(arrowSize, arrowSize);
+    if (m_bannerNextButton)
+        m_bannerNextButton->setFixedSize(arrowSize, arrowSize);
+
+    const int iconBox = qBound(64, static_cast<int>(bannerH * 0.72), 132);
+    m_bannerIconPixels = qBound(48, static_cast<int>(iconBox * 0.78), 100);
+    if (m_bannerIconLabel) {
+        m_bannerIconLabel->setFixedSize(iconBox, iconBox);
+        const int radius = qMax(8, iconBox / 8);
+        m_bannerIconLabel->setStyleSheet(
+                QStringLiteral("background: rgba(0,0,0,0.08); border-radius: %1px;")
+                        .arg(radius));
+    }
+
+    const int titlePx = qBound(18, bannerH / 5, 32);
+    if (m_bannerTitleLabel) {
+        m_bannerTitleLabel->setStyleSheet(
+                QStringLiteral("color: white; font-size: %1px; font-weight: 700;").arg(titlePx));
+    }
+    const int eyebrowPx = qBound(11, titlePx - 4, 14);
+    if (m_bannerEyebrowLabel) {
+        m_bannerEyebrowLabel->setStyleSheet(
+                QStringLiteral("color: rgba(255,255,255,0.85); font-weight: 600; font-size: %1px;")
+                        .arg(eyebrowPx));
+    }
+
+    refreshActiveBannerCard();
+}
+
 void MainWindow::refreshFeaturedBanner(const QVector<AppInfo> &apps)
 {
     if (!m_bannerTitleLabel || !m_bannerSummaryLabel || !m_bannerIconLabel)
@@ -1877,7 +2701,7 @@ void MainWindow::refreshActiveBannerCard()
         m_bannerTitleLabel->setText(tr("Discover apps"));
         m_bannerSummaryLabel->setText(m_activeStoreTemplate.bannerEmptySummary);
         const QIcon icon = QIcon::fromTheme(QStringLiteral("applications-other"));
-        m_bannerIconLabel->setPixmap(icon.pixmap(72, 72));
+        m_bannerIconLabel->setPixmap(icon.pixmap(m_bannerIconPixels, m_bannerIconPixels));
         m_bannerOpenButton->setEnabled(false);
         if (m_bannerPrevButton)
             m_bannerPrevButton->setEnabled(false);
@@ -1900,7 +2724,7 @@ void MainWindow::refreshActiveBannerCard()
         icon = QIcon::fromTheme(app.id);
     if (icon.isNull())
         icon = QIcon::fromTheme(QStringLiteral("applications-other"));
-    m_bannerIconLabel->setPixmap(icon.pixmap(72, 72));
+    m_bannerIconLabel->setPixmap(icon.pixmap(m_bannerIconPixels, m_bannerIconPixels));
     m_bannerOpenButton->setEnabled(!app.id.isEmpty());
     const bool multi = m_bannerApps.size() > 1;
     if (m_bannerPrevButton)
@@ -2003,83 +2827,19 @@ void MainWindow::refreshStoreCategoriesPane()
     if (selectedRow >= 0)
         m_storeCategoriesList->setCurrentRow(selectedRow);
     else
-        rebuildStoreCategoryCards();
-}
-
-void MainWindow::rebuildStoreCategoryCards()
-{
-    auto *grid = m_storeCategoryCardsContainer
-            ? qobject_cast<QGridLayout *>(m_storeCategoryCardsContainer->layout())
-            : nullptr;
-    if (!grid)
-        return;
-
-    while (grid->count()) {
-        auto *item = grid->takeAt(0);
-        if (item->widget())
-            item->widget()->deleteLater();
-        delete item;
-    }
-
-    const QString category = m_selectedStoreCategory.trimmed();
-    QVector<AppInfo> filtered;
-    for (const AppInfo &app : m_storeCategoryPool) {
-        bool match = false;
-        for (const QString &cat : app.categories) {
-            if (cat.compare(category, Qt::CaseInsensitive) == 0) {
-                match = true;
-                break;
-            }
-        }
-        if (!match && !category.isEmpty()) {
-            const QString haystack = (app.name + QLatin1Char(' ') + app.summary).toLower();
-            match = haystack.contains(category.toLower());
-        }
-        if (category.isEmpty() || match)
-            filtered.append(app);
-    }
-
-    const int spacing = grid->horizontalSpacing() > 0 ? grid->horizontalSpacing() : 12;
-    const int availableWidth = exploreAvailableWidth(m_storeCategoryCardsContainer, grid);
-    const int columns = exploreColumnCount(availableWidth, spacing);
-    if (filtered.isEmpty()) {
-        auto *label = new QLabel(tr("No apps found for this category."), m_storeCategoryCardsContainer);
-        label->setStyleSheet(QStringLiteral("color: gray; padding: 20px;"));
-        grid->addWidget(label, 0, 0, 1, columns);
-        return;
-    }
-
-    for (int i = 0; i < filtered.size(); ++i) {
-        const AppInfo app = filtered.at(i);
-        auto *card = new AppCardWidget(m_storeCategoryCardsContainer);
-        card->setApp(app);
-        const int row = i / columns;
-        const int col = i % columns;
-        grid->addWidget(card, row, col, Qt::AlignTop | Qt::AlignHCenter);
-        connect(card, &AppCardWidget::openDetailsRequested, this, [this, app]() {
-            showDetailsForApp(app.id);
-        });
-        connect(card, &AppCardWidget::installRequested, this, [this, app]() {
-            onExploreInstallRequested(app.id);
-        });
-    }
-    for (int col = 0; col < columns; ++col)
-        grid->setColumnStretch(col, 0);
+        updateCategoryFeed();
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
-    if (m_stack && m_stack->currentIndex() == 0) {
-        if (m_mainContent && m_mainContent->currentIndex() == 0) {
-            if (m_topSectionIndex == 0)
-                rebuildExploreCards();
-            else if (m_topSectionIndex == 1)
-                rebuildExploreCards();
-        } else if (m_mainContent && m_mainContent->currentIndex() == 1 && m_topSectionIndex == 0) {
-            rebuildStoreCategoryCards();
-        }
-    }
+    updateFeaturedBannerLayout();
+    if (!m_stack || m_stack->currentIndex() != 0 || !m_mainContent)
+        return;
+    if (m_mainContent->currentIndex() == 0 && m_topSectionIndex == 0)
+        scheduleExploreResizeReflow();
+    else if (m_mainContent->currentIndex() == 1 && m_topSectionIndex == 0)
+        scheduleCategoryResizeReflow();
 }
 
 StoreTemplate MainWindow::defaultStoreTemplate() const
@@ -2207,7 +2967,6 @@ void MainWindow::applyActiveStoreTemplateUi()
         m_storeCategoryPool.clear();
         m_selectedStoreCategory.clear();
         m_bannerApps.clear();
-        m_lastExploreModelSignature.clear();
         refreshFeaturedBanner({});
     }
     m_appliedStoreRepoId = newRepoId;
@@ -2239,6 +2998,35 @@ QString MainWindow::buildStorePageUrl(const AppInfo &app) const
 
 void MainWindow::prepareDetailsAppInfo(AppInfo &info) const
 {
+    for (int i = 0; i < m_installedModel->rowCount(); ++i) {
+        const AppInfo installed = m_installedModel->appAt(i);
+        if (installed.id == info.id) {
+            info.installed = true;
+            if (info.version.isEmpty() && !installed.version.isEmpty())
+                info.version = installed.version;
+            if ((info.name.isEmpty() || info.name == info.id) && !installed.name.isEmpty())
+                info.name = installed.name;
+            break;
+        }
+    }
+
+    const QString repoId = info.repoId.isEmpty() ? QStringLiteral("flathub") : info.repoId;
+    AppInfo cached;
+    if (m_backend->loadCachedAppMetadata(repoId, info.id, &cached)) {
+        if ((info.name.isEmpty() || info.name == info.id) && !cached.name.isEmpty())
+            info.name = cached.name;
+        if (info.summary.isEmpty() && !cached.summary.isEmpty())
+            info.summary = cached.summary;
+        if (info.version.isEmpty() && !cached.version.isEmpty())
+            info.version = cached.version;
+        if (info.iconUrl.isEmpty() && !cached.iconUrl.isEmpty())
+            info.iconUrl = cached.iconUrl;
+        if ((info.iconName.isEmpty() || info.iconName == info.id) && !cached.iconName.isEmpty())
+            info.iconName = cached.iconName;
+        if (info.developerName.isEmpty() && !cached.developerName.isEmpty())
+            info.developerName = cached.developerName;
+    }
+
     const QString catalogUrl = m_backend->catalogPageUrlForInstalledApp(info.repoId, info.id);
     if (!catalogUrl.isEmpty())
         info.storePageUrl = catalogUrl;
@@ -2246,7 +3034,7 @@ void MainWindow::prepareDetailsAppInfo(AppInfo &info) const
         info.storePageUrl.clear();
 
     info.remoteRepoUrl = m_backend->remoteConfigUrl(info.repoId);
-    m_backend->enrichAppMetadata(info);
+    m_backend->enrichAppMetadataAsync(info);
 }
 
 QVector<AppInfo> MainWindow::installedAppsSnapshot() const
@@ -2272,19 +3060,40 @@ void MainWindow::configureInstalledRowSource(InstalledRowWidget *row, const AppI
 
 void MainWindow::refreshInstalledRowTrackedUpdate(InstalledRowWidget *row, const AppInfo &app)
 {
-    if (!row)
+    refreshInstalledRowUpdateState(row, app);
+}
+
+void MainWindow::refreshInstalledRowUpdateState(InstalledRowWidget *row, const AppInfo &app)
+{
+    if (!row || !m_backend)
         return;
+
     QString releaseTag;
+    bool trackedUpdate = false;
     for (const TrackedBuildProject &project : m_trackedBuildProjects) {
         if (project.linkedAppId.trimmed() != app.id)
             continue;
         if (TrackedBuildClassifier::trackedReleaseUpdateTarget(app.version, project, &releaseTag,
                                                                  nullptr)) {
-            row->setTrackedUpdateAvailable(true, releaseTag);
-            return;
+            trackedUpdate = true;
+            break;
         }
     }
-    row->setTrackedUpdateAvailable(false, QString());
+    row->setTrackedUpdateAvailable(trackedUpdate, releaseTag);
+    row->setRemoteUpdateAvailable(!trackedUpdate && m_backend->hasRemoteUpdate(app.id));
+}
+
+void MainWindow::refreshAllInstalledRowUpdateStates()
+{
+    if (!m_installedModel || !m_backend)
+        return;
+    for (int i = 0; i < m_installedModel->rowCount(); ++i) {
+        const AppInfo app = m_installedModel->appAt(i);
+        if (InstalledRowWidget *row = m_installedRowsByAppId.value(app.id))
+            refreshInstalledRowUpdateState(row, app);
+    }
+    refreshInstalledUpdateBanner();
+    updateInstalledNavAttention();
 }
 
 void MainWindow::patchInstalledTrackedBuildMetadata()
@@ -2366,11 +3175,26 @@ void MainWindow::openTrackedBuildDialogForApp(const AppInfo &app)
         return;
 }
 
-MainWindow::TrackedUpdateSummary MainWindow::summarizeTrackedUpdates() const
+void MainWindow::refreshRuntimeUpdatesRow()
+{
+    if (!m_runtimeUpdatesRow || !m_backend)
+        return;
+    const int count = m_backend->runtimeUpdateCount();
+    m_runtimeUpdatesRow->setVisible(count > 0);
+    m_runtimeUpdatesRow->setRuntimeUpdateCount(count);
+    const bool runtimePhase = m_updateAllActive && m_updateAllQueue.isEmpty()
+            && (!m_runtimeUpdateQueue.isEmpty() || !m_runtimeUpdateCurrentRef.isEmpty());
+    m_runtimeUpdatesRow->setUpdateInProgress(runtimePhase);
+}
+
+MainWindow::TrackedUpdateSummary MainWindow::summarizeInstalledUpdates() const
 {
     TrackedUpdateSummary summary;
     if (!m_backend || !m_installedModel)
         return summary;
+
+    summary.flatpakPendingCount = m_backend->remoteUpdateCount();
+    summary.runtimePendingCount = m_backend->runtimeUpdateCount();
 
     const QVector<TrackedBuildProject> projects = m_backend->trackedBuildProjects();
     for (const TrackedBuildProject &project : projects) {
@@ -2396,30 +3220,50 @@ MainWindow::TrackedUpdateSummary MainWindow::summarizeTrackedUpdates() const
         QString assetUrl;
         if (TrackedBuildClassifier::trackedReleaseUpdateTarget(installed.version, project,
                                                                 &releaseTag, &assetUrl)) {
-            ++summary.pendingUpdateCount;
+            ++summary.trackedPendingCount;
         }
     }
     return summary;
 }
 
-void MainWindow::refreshTrackedUpdateBanner()
+void MainWindow::refreshInstalledUpdateBanner()
 {
     if (!m_checkUpdatesStatusLabel)
         return;
 
-    const TrackedUpdateSummary summary = summarizeTrackedUpdates();
-    if (summary.pendingUpdateCount <= 0) {
+    const TrackedUpdateSummary summary = summarizeInstalledUpdates();
+    const int totalPending = summary.trackedPendingCount + summary.flatpakPendingCount
+            + summary.runtimePendingCount;
+    refreshUpdateAllButtonState();
+    refreshRuntimeUpdatesRow();
+    if (totalPending <= 0) {
         updateInstalledNavAttention();
         return;
     }
 
     m_checkUpdatesStatusLabel->setStyleSheet(
             QStringLiteral("color: rgba(232, 200, 120, 0.95); font-weight: 500;"));
-    m_checkUpdatesStatusLabel->setText(
-            summary.pendingUpdateCount == 1
-                    ? tr("1 tracked update available — click Update in the list.")
-                    : tr("%1 tracked updates available — click Update in the list.")
-                              .arg(summary.pendingUpdateCount));
+    QStringList parts;
+    if (summary.flatpakPendingCount > 0) {
+        parts.append(summary.flatpakPendingCount == 1
+                             ? tr("1 app update")
+                             : tr("%1 app updates").arg(summary.flatpakPendingCount));
+    }
+    if (summary.runtimePendingCount > 0) {
+        parts.append(summary.runtimePendingCount == 1
+                             ? tr("1 runtime update")
+                             : tr("%1 runtime updates").arg(summary.runtimePendingCount));
+    }
+    if (summary.trackedPendingCount > 0) {
+        parts.append(summary.trackedPendingCount == 1
+                             ? tr("1 tracked update")
+                             : tr("%1 tracked updates").arg(summary.trackedPendingCount));
+    }
+    if (!parts.isEmpty()) {
+        m_checkUpdatesStatusLabel->setText(
+                tr("%1 available — click Update all.")
+                        .arg(parts.join(tr(", "))));
+    }
     m_checkUpdatesStatusLabel->show();
     updateInstalledNavAttention();
 }
@@ -2429,7 +3273,10 @@ void MainWindow::updateInstalledNavAttention()
     if (!m_installedButton)
         return;
 
-    const bool wantAttention = summarizeTrackedUpdates().pendingUpdateCount > 0
+    const TrackedUpdateSummary summary = summarizeInstalledUpdates();
+    const bool wantAttention = (summary.trackedPendingCount + summary.flatpakPendingCount
+                                + summary.runtimePendingCount)
+                    > 0
             && m_topSectionIndex != 2;
     m_installedButton->setProperty("updatesPending", wantAttention);
 
@@ -2458,6 +3305,16 @@ void MainWindow::updateInstalledNavAttention()
     }
 }
 
+void MainWindow::completePendingUpdateCheck(bool userInitiated)
+{
+    if (m_pendingUpdateCheckTasks > 0)
+        --m_pendingUpdateCheckTasks;
+    if (m_pendingUpdateCheckTasks > 0)
+        return;
+    refreshInstalledUpdateBanner();
+    finishCheckForUpdatesFeedback(userInitiated);
+}
+
 void MainWindow::finishCheckForUpdatesFeedback(bool userInitiated)
 {
     m_checkForUpdatesPending = false;
@@ -2466,10 +3323,11 @@ void MainWindow::finishCheckForUpdatesFeedback(bool userInitiated)
         m_checkUpdatesButton->setEnabled(true);
         m_checkUpdatesButton->setText(tr("Check for updates"));
     }
+    refreshUpdateAllButtonState();
     if (!m_checkUpdatesStatusLabel || !m_backend || !m_installedModel)
         return;
 
-    const TrackedUpdateSummary summary = summarizeTrackedUpdates();
+    const TrackedUpdateSummary summary = summarizeInstalledUpdates();
     const QString defaultStyle = QStringLiteral("color: rgba(200,200,210,0.92);");
 
     if (!summary.errors.isEmpty()) {
@@ -2478,8 +3336,10 @@ void MainWindow::finishCheckForUpdatesFeedback(bool userInitiated)
         m_checkUpdatesStatusLabel->show();
         return;
     }
-    if (summary.pendingUpdateCount > 0) {
-        refreshTrackedUpdateBanner();
+    const int totalPending = summary.trackedPendingCount + summary.flatpakPendingCount
+            + summary.runtimePendingCount;
+    if (totalPending > 0) {
+        refreshInstalledUpdateBanner();
         return;
     }
     if (!userInitiated)
@@ -2487,7 +3347,9 @@ void MainWindow::finishCheckForUpdatesFeedback(bool userInitiated)
 
     m_checkUpdatesStatusLabel->setStyleSheet(defaultStyle);
     if (summary.trackedInstalledCount > 0) {
-        m_checkUpdatesStatusLabel->setText(tr("All tracked apps are up to date."));
+        m_checkUpdatesStatusLabel->setText(tr("All installed apps and runtimes are up to date."));
+    } else if (m_installedModel->rowCount() > 0) {
+        m_checkUpdatesStatusLabel->setText(tr("All Flatpak apps and runtimes are up to date."));
     } else {
         m_checkUpdatesStatusLabel->setText(
                 tr("No installed apps are linked to tracked builds. Add repos in Settings → Tracked Builds."));
@@ -2617,6 +3479,11 @@ void MainWindow::setStoreFeedLoading(bool loading)
     if (m_storeFeedLoading == loading)
         return;
     m_storeFeedLoading = loading;
+    if (loading)
+        m_showExploreSkeleton = true;
+    else
+        m_showExploreSkeleton = false;
+
     if (m_storeStatusLabel && m_topSectionIndex == 0) {
         if (loading) {
             const bool hasCachedFeed = !m_storeTrending.isEmpty() || !m_storePopular.isEmpty()
@@ -2630,8 +3497,8 @@ void MainWindow::setStoreFeedLoading(bool loading)
             m_storeStatusLabel->setVisible(false);
         }
     }
-    if (m_topSectionIndex == 0 && m_exploreModel->rowCount() == 0)
-        scheduleExploreRebuild();
+    if (m_topSectionIndex == 0 && m_exploreModel->rowCount() == 0 && loading)
+        updateExploreSkeleton();
 }
 
 void MainWindow::beginStoreRefresh(bool forceRefresh)
@@ -2641,21 +3508,6 @@ void MainWindow::beginStoreRefresh(bool forceRefresh)
     if (forceRefresh || !flathub || !m_backend->flathubCollectionsFreshForToday())
         setStoreFeedLoading(true);
     m_backend->fetchStoreSuggestions(repoId, forceRefresh);
-    if (flathub) {
-        const int catalogDelayMs = forceRefresh ? 0 : 8000;
-        QTimer::singleShot(catalogDelayMs, this, [this, repoId]() {
-            m_backend->refreshCatalogIndex(repoId);
-        });
-    }
-}
-
-QString MainWindow::exploreModelSignature(const QVector<AppInfo> &apps)
-{
-    QStringList ids;
-    ids.reserve(apps.size());
-    for (const AppInfo &app : apps) {
-        if (!app.id.isEmpty())
-            ids.append(app.id);
-    }
-    return ids.join(QLatin1Char('|'));
+    if (flathub && forceRefresh)
+        m_backend->refreshCatalogIndex(repoId);
 }

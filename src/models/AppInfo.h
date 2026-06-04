@@ -44,5 +44,13 @@ struct AppInfo
     QString trackedNightlyPublishedAtIso;
     QString trackedNightlyAssetUrl;
     QString trackedBuildLastError;
+
+    /** Set when a newer build exists on the app's Flatpak remote. */
+    bool remoteUpdateAvailable = false;
+
+    /** Full installed ref (e.g. runtime/org.gnome.Platform/x86_64/49) for direct updates. */
+    QString installedFlatpakRef;
+    /** True for runtime/SDK rows from the update scan (not shown in the main installed list). */
+    bool isRuntimeUpdate = false;
 };
 

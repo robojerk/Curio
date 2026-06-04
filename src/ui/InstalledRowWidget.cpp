@@ -179,11 +179,11 @@ void InstalledRowWidget::setApp(const AppInfo &info)
     m_trackLinkLabel.clear();
     m_trackedUpdateAvailable = false;
     m_trackedUpdateTag.clear();
+    m_remoteUpdateAvailable = false;
     m_nameLabel->setText(AppDisplayNames::displayName(info.name, info.id));
     updateSummaryLabel();
     updateSourceLabel();
-    if (m_updateButton && !m_updateInProgress)
-        m_updateButton->setVisible(m_trackedUpdateAvailable);
+    syncUpdateButtonVisibility();
 
     QIcon fallback = QIcon::fromTheme(QStringLiteral("application-x-executable"));
     if (fallback.isNull())
@@ -229,14 +229,39 @@ void InstalledRowWidget::setTrackedUpdateAvailable(bool available, const QString
     m_trackedUpdateAvailable = available;
     m_trackedUpdateTag = releaseTag.trimmed();
     if (m_updateButton && !m_updateInProgress) {
-        m_updateButton->setVisible(available);
+        syncUpdateButtonVisibility();
         if (available) {
             m_updateButton->setToolTip(tr("Install release %1").arg(m_trackedUpdateTag));
+        } else if (m_remoteUpdateAvailable) {
+            m_updateButton->setToolTip(tr("Install update from %1").arg(formatInstallSource(m_info)));
         } else {
             m_updateButton->setToolTip(QString());
         }
     }
     updateSummaryLabel();
+}
+
+void InstalledRowWidget::setRemoteUpdateAvailable(bool available)
+{
+    m_remoteUpdateAvailable = available;
+    if (m_updateButton && !m_updateInProgress) {
+        syncUpdateButtonVisibility();
+        if (m_trackedUpdateAvailable) {
+            m_updateButton->setToolTip(tr("Install release %1").arg(m_trackedUpdateTag));
+        } else if (available) {
+            m_updateButton->setToolTip(tr("Install update from %1").arg(formatInstallSource(m_info)));
+        } else {
+            m_updateButton->setToolTip(QString());
+        }
+    }
+    updateSummaryLabel();
+}
+
+void InstalledRowWidget::syncUpdateButtonVisibility()
+{
+    if (!m_updateButton || m_updateInProgress)
+        return;
+    m_updateButton->setVisible(m_trackedUpdateAvailable || m_remoteUpdateAvailable);
 }
 
 void InstalledRowWidget::setUpdateInProgress(bool inProgress, const QString &statusText, int progress)
@@ -270,7 +295,7 @@ void InstalledRowWidget::setUpdateInProgress(bool inProgress, const QString &sta
     m_updateProgress->hide();
     m_updateButton->setEnabled(true);
     m_updateButton->setText(tr("Update"));
-    m_updateButton->setVisible(m_trackedUpdateAvailable);
+    syncUpdateButtonVisibility();
     updateSummaryLabel();
 }
 
@@ -283,6 +308,10 @@ void InstalledRowWidget::updateSummaryLabel()
     if (m_trackedUpdateAvailable && !m_trackedUpdateTag.isEmpty()) {
         summary = tr("Version %1 — update to %2 available")
                           .arg(m_info.version, m_trackedUpdateTag);
+    } else if (m_remoteUpdateAvailable) {
+        summary = m_info.version.isEmpty()
+                ? tr("Flatpak update available")
+                : tr("Version %1 — Flatpak update available").arg(m_info.version);
     } else if (m_info.summary.isEmpty() && !m_info.version.isEmpty()) {
         summary = tr("Version %1").arg(m_info.version);
     } else {

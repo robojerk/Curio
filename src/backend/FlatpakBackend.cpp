@@ -1,6 +1,8 @@
 #include "FlatpakBackend.h"
 #include "AppStreamProvider.h"
+#include "CatalogCache.h"
 #include "FlatpakInstallationService.h"
+#include "FlatpakRefMapper.h"
 #include "FlatpakRemoteCatalog.h"
 #include "FlatpakScope.h"
 #include "FlatpakTransactionRunner.h"
@@ -8,6 +10,7 @@
 #include "TrackedBuildClassifier.h"
 #include "TrackedBuildSource.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
@@ -28,6 +31,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QUrl>
+#include <QtConcurrent>
 #include <QTimer>
 #include <QUuid>
 #include <QEventLoop>
@@ -427,6 +431,7 @@ FlatpakBackend::FlatpakBackend(QObject *parent)
     , m_networkManager(new QNetworkAccessManager(this))
     , m_flathubApiClient(new FlathubApiClient(m_networkManager, this))
     , m_trackedBuildSource(new TrackedBuildSource(m_networkManager, this))
+    , m_catalogCache(new CatalogCache(this))
 {
     Q_ASSERT(m_networkManager);
     Q_ASSERT(m_trackedBuildSource);
@@ -462,6 +467,13 @@ FlatpakBackend::FlatpakBackend(QObject *parent)
         loadTrackedBuilds();
         ensureBuiltInTrackedBuilds();
     }
+    m_catalogCache->loadIndex(QStringLiteral("flathub"));
+
+    m_uiCoalesceTimer = new QTimer(this);
+    m_uiCoalesceTimer->setSingleShot(true);
+    m_uiCoalesceTimer->setInterval(80);
+    connect(m_uiCoalesceTimer, &QTimer::timeout, this, &FlatpakBackend::flushStoreCollectionPatches);
+
     if (qEnvironmentVariableIsSet("CURIO_APPSTREAM_DEBUG")) {
         qDebug() << "FlatpakBackend: AppStream provider available =" << m_appStreamProvider->isAvailable();
     }
@@ -495,6 +507,13 @@ void FlatpakBackend::emitCachedDiscoveryData()
 void FlatpakBackend::enrichAppMetadata(AppInfo &app) const
 {
     m_appStreamProvider->enrich(app);
+    if (app.iconUrl.isEmpty()) {
+        const QString iconPath = FlatpakRefMapper::installedIconFilePath(app.id);
+        if (!iconPath.isEmpty())
+            app.iconUrl = iconPath;
+    }
+    if (app.iconName.isEmpty() || app.iconName == app.id)
+        app.iconName = FlatpakRefMapper::installedIconName(app.id);
     dedupeScreenshotUrls(app);
 }
 
@@ -595,7 +614,8 @@ void FlatpakBackend::processStoreIconEnrichmentBatch()
             patchList(m_cachedFlathubUpdated);
             m_storeIconEnrichCacheDirty = true;
         }
-        emit storeIconsEnriched(m_storeIconEnrichRepoId, enrichedBatch);
+        for (const AppInfo &app : enrichedBatch)
+            queueStoreCollectionPatch(app);
     }
 
     if (m_storeIconEnrichIndex >= m_storeIconEnrichQueue.size()) {
@@ -623,6 +643,7 @@ void FlatpakBackend::refreshInstalled()
         syncTrackedApplyStateFromInstalled(apps);
         emit installedAppsUpdated(apps);
         scheduleInstalledMetadataEnrichment(apps);
+        refreshRemoteUpdates();
         watcher->deleteLater();
     });
     watcher->setFuture(QtConcurrent::run([installations = m_installations.get()]() {
@@ -632,10 +653,24 @@ void FlatpakBackend::refreshInstalled()
 
 void FlatpakBackend::search(const QString &query)
 {
+    const QString trimmed = query.trimmed();
+    QVector<AppInfo> results;
+
+    if (m_catalogCache && trimmed.size() >= 2) {
+        const QVector<AppInfo> localHits = m_catalogCache->searchLocal(QStringLiteral("flathub"), trimmed);
+        if (!localHits.isEmpty()) {
+            results = localHits;
+            applyTrackedBuildMetadata(&results);
+            emit searchResultsUpdated(results);
+        }
+    }
+
     QVector<AppInfo> cached;
     if (tryGetCachedSearch(query, &cached)) {
-        applyTrackedBuildMetadata(&cached);
-        emit searchResultsUpdated(cached);
+        if (!cached.isEmpty()) {
+            applyTrackedBuildMetadata(&cached);
+            emit searchResultsUpdated(cached);
+        }
         if (qEnvironmentVariableIsSet("CURIO_APPSTREAM_DEBUG")) {
             qDebug() << "FlatpakBackend: cache hit for query" << query;
         }
@@ -643,13 +678,32 @@ void FlatpakBackend::search(const QString &query)
     }
 
     if (!m_installations || !m_installations->isValid()) {
-        emit searchResultsUpdated({});
+        if (results.isEmpty())
+            emit searchResultsUpdated(results);
         return;
     }
 
     auto *watcher = new QFutureWatcher<QVector<AppInfo>>(this);
-    connect(watcher, &QFutureWatcher<QVector<AppInfo>>::finished, this, [this, watcher, query]() {
+    connect(watcher, &QFutureWatcher<QVector<AppInfo>>::finished, this, [this, watcher, query, results]() {
         QVector<AppInfo> apps = watcher->result();
+        QHash<QString, AppInfo> mergedById;
+        for (const AppInfo &app : results)
+            mergedById.insert(app.id, app);
+        for (const AppInfo &app : apps) {
+            auto it = mergedById.find(app.id);
+            if (it != mergedById.end()) {
+                AppInfo &existing = it.value();
+                if (existing.name.isEmpty() || existing.name == existing.id)
+                    existing.name = app.name;
+                if (existing.summary.isEmpty())
+                    existing.summary = app.summary;
+                if (existing.version.isEmpty())
+                    existing.version = app.version;
+            } else {
+                mergedById.insert(app.id, app);
+            }
+        }
+        apps = mergedById.values();
         applyTrackedBuildMetadata(&apps);
         putCachedSearch(query, apps);
         emit searchResultsUpdated(apps);
@@ -747,6 +801,9 @@ void FlatpakBackend::applyFlathubCollections(const QString &normalizedRepoId,
     emit storeCollectionsUpdated(normalizedRepoId, trending, popular, recent, updated);
     scheduleStoreIconEnrichment(normalizedRepoId, trending, popular, recent, updated);
     patchCollectionsFromCatalogIndex(normalizedRepoId);
+
+    if (cacheSource == QStringLiteral("api"))
+        scheduleCatalogIndexAfterApiSuccess(normalizedRepoId);
 }
 
 void FlatpakBackend::fetchFlathubCollectionsViaApi(const QString &normalizedRepoId,
@@ -861,28 +918,221 @@ void FlatpakBackend::refreshCatalogIndex(const QString &repoId)
             ? QStringLiteral("flathub")
             : repoId.trimmed();
 
+    if (m_catalogIndexRunning) {
+        m_pendingCatalogIndexRepoId = normalizedRepoId;
+        return;
+    }
+
+    refreshCatalogIndexViaSubprocess(normalizedRepoId);
+}
+
+void FlatpakBackend::scheduleCatalogIndexAfterApiSuccess(const QString &repoId)
+{
+    const QString normalizedRepoId = repoId.trimmed().isEmpty()
+            ? QStringLiteral("flathub")
+            : repoId.trimmed();
+
+    constexpr qint64 kCatalogIndexTtlMs = 24LL * 60LL * 60LL * 1000LL;
+    if (m_catalogCache && m_catalogCache->isIndexFresh(normalizedRepoId, kCatalogIndexTtlMs))
+        return;
+
+    // Keep startup responsive: defer full remote-ls until after the user can browse.
+    QTimer::singleShot(60'000, this, [this, normalizedRepoId]() {
+        refreshCatalogIndex(normalizedRepoId);
+    });
+}
+
+namespace {
+
+QVector<AppInfo> parseFlatpakRemoteLsOutput(const QByteArray &output, const QString &repoId)
+{
+    QVector<AppInfo> apps;
+    const QList<QByteArray> lines = output.split('\n');
+    for (const QByteArray &lineBytes : lines) {
+        const QString line = QString::fromUtf8(lineBytes).trimmed();
+        if (line.isEmpty() || line.startsWith(QStringLiteral("Application")))
+            continue;
+        const QStringList parts = line.split(QRegularExpression(QStringLiteral("\\s+")),
+                                             Qt::SkipEmptyParts);
+        if (parts.isEmpty())
+            continue;
+        AppInfo app;
+        app.id = parts.at(0);
+        if (app.id.isEmpty() || !app.id.contains(QLatin1Char('.')))
+            continue;
+        if (parts.size() > 1)
+            app.version = parts.at(1);
+        if (parts.size() > 2)
+            app.name = parts.mid(2).join(QLatin1Char(' '));
+        if (app.name.isEmpty())
+            app.name = app.id;
+        app.repoId = repoId;
+        app.storePageUrl = FlatpakRemoteCatalog::catalogPageUrlForApp(repoId, app.id);
+        apps.append(app);
+    }
+    return apps;
+}
+
+QVector<AppInfo> fetchCatalogAppsSubprocess(const QString &repoId,
+                                            FlatpakInstallationService *installations)
+{
+    const QString workerPath = QCoreApplication::applicationDirPath()
+            + QStringLiteral("/curio-catalog-worker");
+    const QString workerCommand = QFileInfo::exists(workerPath)
+            ? workerPath
+            : QStringLiteral("curio-catalog-worker");
+
+    QProcess workerProc;
+    workerProc.start(workerCommand, {repoId});
+    if (workerProc.waitForFinished(900'000) && workerProc.exitStatus() == QProcess::NormalExit
+        && workerProc.exitCode() == 0) {
+        QVector<AppInfo> apps;
+        const QList<QByteArray> lines = workerProc.readAllStandardOutput().split('\n');
+        for (const QByteArray &lineBytes : lines) {
+            if (lineBytes.trimmed().isEmpty())
+                continue;
+            const QJsonDocument doc = QJsonDocument::fromJson(lineBytes);
+            if (!doc.isObject())
+                continue;
+            const QJsonObject obj = doc.object();
+            AppInfo app;
+            app.id = obj.value(QStringLiteral("id")).toString();
+            app.name = obj.value(QStringLiteral("name")).toString();
+            app.summary = obj.value(QStringLiteral("summary")).toString();
+            app.version = obj.value(QStringLiteral("version")).toString();
+            app.repoId = obj.value(QStringLiteral("repoId")).toString();
+            app.storePageUrl = obj.value(QStringLiteral("storePageUrl")).toString();
+            if (!app.id.isEmpty())
+                apps.append(app);
+        }
+        if (!apps.isEmpty())
+            return apps;
+    }
+
+    QProcess proc;
+    proc.start(QStringLiteral("flatpak"),
+               {QStringLiteral("remote-ls"),
+                repoId,
+                QStringLiteral("--app"),
+                QStringLiteral("--columns=application,version,name")});
+    if (proc.waitForFinished(900'000) && proc.exitStatus() == QProcess::NormalExit
+        && proc.exitCode() == 0) {
+        const QVector<AppInfo> parsed = parseFlatpakRemoteLsOutput(proc.readAllStandardOutput(), repoId);
+        if (!parsed.isEmpty())
+            return parsed;
+    }
+    if (!installations || !installations->isValid())
+        return {};
+    return installations->listRemoteApps(repoId);
+}
+
+} // namespace
+
+void FlatpakBackend::refreshCatalogIndexViaSubprocess(const QString &repoId)
+{
     if (!m_installations || !m_installations->isValid())
         return;
 
-    auto *watcher = new QFutureWatcher<QHash<QString, AppInfo>>(this);
+    m_catalogIndexRunning = true;
+
+    auto *watcher = new QFutureWatcher<QVector<AppInfo>>(this);
     connect(watcher,
-            &QFutureWatcher<QHash<QString, AppInfo>>::finished,
+            &QFutureWatcher<QVector<AppInfo>>::finished,
             this,
-            [this, watcher, normalizedRepoId]() {
-                m_catalogIndex = watcher->result();
-                m_catalogIndexRepoId = normalizedRepoId;
+            [this, watcher, repoId]() {
+                const QVector<AppInfo> apps = watcher->result();
                 watcher->deleteLater();
-                patchCollectionsFromCatalogIndex(normalizedRepoId);
+
+                auto *persistWatcher = new QFutureWatcher<QHash<QString, AppInfo>>(this);
+                connect(persistWatcher,
+                        &QFutureWatcher<QHash<QString, AppInfo>>::finished,
+                        this,
+                        [this, persistWatcher, repoId]() {
+                            m_catalogIndex = persistWatcher->result();
+                            m_catalogIndexRepoId = repoId;
+                            persistWatcher->deleteLater();
+
+                            patchCollectionsFromCatalogIndex(repoId);
+                            emit catalogIndexFinished(repoId);
+
+                            m_catalogIndexRunning = false;
+                            if (!m_pendingCatalogIndexRepoId.isEmpty()
+                                && m_pendingCatalogIndexRepoId != repoId) {
+                                const QString pending = m_pendingCatalogIndexRepoId;
+                                m_pendingCatalogIndexRepoId.clear();
+                                refreshCatalogIndex(pending);
+                            } else {
+                                m_pendingCatalogIndexRepoId.clear();
+                            }
+                        });
+
+                persistWatcher->setFuture(QtConcurrent::run([this, apps, repoId]() {
+                    if (m_catalogCache)
+                        m_catalogCache->saveAppsBatch(repoId, apps);
+
+                    QHash<QString, AppInfo> index;
+                    index.reserve(apps.size());
+                    for (const AppInfo &app : apps) {
+                        if (!app.id.isEmpty())
+                            index.insert(app.id, app);
+                    }
+                    return index;
+                }));
             });
-    watcher->setFuture(QtConcurrent::run([installations = m_installations.get(), normalizedRepoId]() {
-        QHash<QString, AppInfo> index;
-        const QVector<AppInfo> apps = installations->listRemoteApps(normalizedRepoId);
-        for (AppInfo app : apps) {
-            app.repoId = normalizedRepoId;
-            if (!app.id.isEmpty())
-                index.insert(app.id, app);
-        }
-        return index;
+    watcher->setFuture(QtConcurrent::run([repoId, installations = m_installations.get()]() {
+        return fetchCatalogAppsSubprocess(repoId, installations);
+    }));
+}
+
+void FlatpakBackend::refreshCatalogIndexInProcess(const QString &repoId)
+{
+    refreshCatalogIndexViaSubprocess(repoId);
+}
+
+void FlatpakBackend::queueStoreCollectionPatch(const AppInfo &app)
+{
+    if (app.id.isEmpty())
+        return;
+    if (m_pendingStorePatchRepoId.isEmpty())
+        m_pendingStorePatchRepoId = app.repoId.isEmpty() ? QStringLiteral("flathub") : app.repoId;
+    m_pendingStorePatches.insert(app.id, app);
+    if (m_uiCoalesceTimer)
+        m_uiCoalesceTimer->start();
+}
+
+void FlatpakBackend::flushStoreCollectionPatches()
+{
+    if (m_pendingStorePatches.isEmpty())
+        return;
+    const QString repoId = m_pendingStorePatchRepoId.isEmpty() ? QStringLiteral("flathub")
+                                                               : m_pendingStorePatchRepoId;
+    const QVector<AppInfo> batch = m_pendingStorePatches.values();
+    m_pendingStorePatches.clear();
+    m_pendingStorePatchRepoId.clear();
+    emit storeCollectionsPatched(repoId, batch);
+}
+
+bool FlatpakBackend::loadCachedAppMetadata(const QString &repoId, const QString &appId, AppInfo *out) const
+{
+    if (!m_catalogCache || out == nullptr)
+        return false;
+    return m_catalogCache->loadApp(repoId, appId, out);
+}
+
+void FlatpakBackend::enrichAppMetadataAsync(const AppInfo &app)
+{
+    if (app.id.isEmpty())
+        return;
+    auto *watcher = new QFutureWatcher<AppInfo>(this);
+    connect(watcher, &QFutureWatcher<AppInfo>::finished, this, [this, watcher]() {
+        AppInfo enriched = watcher->result();
+        watcher->deleteLater();
+        emit appMetadataEnriched(enriched);
+    });
+    watcher->setFuture(QtConcurrent::run([this, app]() {
+        AppInfo copy = app;
+        enrichAppMetadata(copy);
+        return copy;
     }));
 }
 
@@ -915,8 +1165,10 @@ void FlatpakBackend::patchCollectionsFromCatalogIndex(const QString &repoId)
             saveFlathubCache();
     }
 
-    if (!patches.isEmpty())
-        emit storeCatalogIndexReady(repoId, patches);
+    if (!patches.isEmpty()) {
+        for (const AppInfo &app : patches)
+            queueStoreCollectionPatch(app);
+    }
 }
 
 void FlatpakBackend::tagAppsWithRepo(QVector<AppInfo> &apps, const QString &repoId) const
@@ -1374,6 +1626,15 @@ void FlatpakBackend::installReleaseAsset(const QString &assetUrl)
     installTrackedBuildAsset(curioProject, assetUrl, QStringLiteral("io.github.curio.Curio"));
 }
 
+void FlatpakBackend::launchApp(const QString &appId)
+{
+    const QString trimmed = appId.trimmed();
+    if (trimmed.isEmpty())
+        return;
+    QProcess::startDetached(QStringLiteral("flatpak"),
+                            {QStringLiteral("run"), trimmed});
+}
+
 void FlatpakBackend::uninstall(const QString &appId)
 {
     if (!m_transactionRunner) {
@@ -1787,6 +2048,107 @@ void FlatpakBackend::refreshTrackedBuilds()
     beginTrackedBuildRefresh();
 }
 
+namespace {
+
+struct RemoteUpdateScanResult
+{
+    QVector<AppInfo> apps;
+    QVector<AppInfo> runtimes;
+};
+
+int runtimeUpdateDisplayCount(const QVector<AppInfo> &updates)
+{
+    QSet<QString> keys;
+    for (const AppInfo &info : updates) {
+        if (info.id.isEmpty())
+            continue;
+        keys.insert(info.id + QLatin1Char('|') + info.version);
+    }
+    return keys.size();
+}
+
+} // namespace
+
+void FlatpakBackend::refreshRemoteUpdates()
+{
+    if (!m_installations || !m_installations->isValid()) {
+        m_remoteUpdateAppIds.clear();
+        m_runtimeUpdates.clear();
+        emit remoteUpdatesCheckFailed(tr("Flatpak backend unavailable"));
+        emit remoteUpdatesChecked(0, 0);
+        return;
+    }
+
+    auto *watcher = new QFutureWatcher<RemoteUpdateScanResult>(this);
+    connect(watcher, &QFutureWatcher<RemoteUpdateScanResult>::finished, this, [this, watcher]() {
+        const RemoteUpdateScanResult result = watcher->result();
+        watcher->deleteLater();
+
+        m_remoteUpdateAppIds.clear();
+        for (const AppInfo &app : result.apps) {
+            if (!app.id.isEmpty())
+                m_remoteUpdateAppIds.insert(app.id);
+        }
+        m_runtimeUpdates = result.runtimes;
+        emit remoteUpdatesChecked(m_remoteUpdateAppIds.size(),
+                                  runtimeUpdateDisplayCount(m_runtimeUpdates));
+    });
+    watcher->setFuture(QtConcurrent::run([installations = m_installations.get()]() {
+        RemoteUpdateScanResult result;
+        result.apps = installations->listAvailableUpdates();
+        result.runtimes = installations->listAvailableRuntimeUpdates();
+        return result;
+    }));
+}
+
+int FlatpakBackend::runtimeUpdateCount() const
+{
+    return runtimeUpdateDisplayCount(m_runtimeUpdates);
+}
+
+QVector<AppInfo> FlatpakBackend::runtimeUpdates() const
+{
+    return m_runtimeUpdates;
+}
+
+void FlatpakBackend::updateInstalledFlatpakRef(const QString &flatpakRef, FlatpakScope scope)
+{
+    const QString ref = flatpakRef.trimmed();
+    if (ref.isEmpty())
+        return;
+
+    if (!m_transactionRunner) {
+        Operation op;
+        op.appId = ref.section(QLatin1Char('/'), 1, 1);
+        op.type = OperationType::Update;
+        op.status = OperationStatus::Failed;
+        op.message = tr("Flatpak backend unavailable");
+        emit operationStarted(op);
+        emit operationFinished(op);
+        return;
+    }
+
+    Operation op;
+    op.appId = ref.section(QLatin1Char('/'), 1, 1);
+    if (op.appId.isEmpty())
+        op.appId = ref;
+    op.type = OperationType::Update;
+    op.status = OperationStatus::Running;
+    op.message = tr("Updating runtime…");
+    emit operationStarted(op);
+    m_transactionRunner->updateFlatpakRef(op, scope, ref);
+}
+
+bool FlatpakBackend::hasRemoteUpdate(const QString &appId) const
+{
+    return m_remoteUpdateAppIds.contains(appId.trimmed());
+}
+
+int FlatpakBackend::remoteUpdateCount() const
+{
+    return m_remoteUpdateAppIds.size();
+}
+
 void FlatpakBackend::beginTrackedBuildRefresh()
 {
     if (m_trackedBuildProjects.isEmpty()) {
@@ -2030,12 +2392,17 @@ void FlatpakBackend::processInstalledMetadataEnrichmentBatch()
         AppInfo app = m_installedEnrichQueue.at(m_installedEnrichIndex++);
         const QString nameBefore = app.name;
         const QString summaryBefore = app.summary;
+        const QString iconUrlBefore = app.iconUrl;
+        const QString iconNameBefore = app.iconName;
         enrichAppMetadata(app);
         const bool nameImproved = app.name != nameBefore
                 && !app.name.isEmpty() && app.name != app.id;
         const bool summaryImproved = !app.summary.isEmpty() && app.summary != summaryBefore;
-        if (nameImproved || summaryImproved || !app.vcsUrl.isEmpty() || !app.homepageUrl.isEmpty()
-                || !app.iconUrl.isEmpty()) {
+        const bool iconImproved = (!app.iconUrl.isEmpty() && app.iconUrl != iconUrlBefore)
+                || (!app.iconName.isEmpty() && app.iconName != iconNameBefore
+                    && app.iconName != app.id);
+        if (nameImproved || summaryImproved || iconImproved || !app.vcsUrl.isEmpty()
+                || !app.homepageUrl.isEmpty()) {
             enrichedBatch.append(app);
         }
     }

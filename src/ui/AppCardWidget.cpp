@@ -6,6 +6,9 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPixmap>
+#include <QProgressBar>
+#include <QResizeEvent>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -124,7 +127,8 @@ AppCardWidget::AppCardWidget(QWidget *parent)
 
     m_installButton = new QPushButton(tr("Install"), this);
     m_installButton->setCursor(Qt::PointingHandCursor);
-    m_installButton->setFixedHeight(30);
+    m_installButton->setFixedHeight(44);
+    m_installButton->setMinimumWidth(88);
     m_installButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     m_installButton->setStyleSheet(QStringLiteral(
         "QPushButton {"
@@ -143,15 +147,76 @@ AppCardWidget::AppCardWidget(QWidget *parent)
     });
     rootLayout->addWidget(m_installButton, 0, Qt::AlignVCenter);
 
+    m_installProgress = new QProgressBar(m_installButton);
+    m_installProgress->setTextVisible(false);
+    m_installProgress->setRange(0, 100);
+    m_installProgress->setValue(0);
+    m_installProgress->hide();
+    m_installProgress->setStyleSheet(QStringLiteral(
+        "QProgressBar {"
+        "  border: 1px solid rgba(255,255,255,0.12);"
+        "  border-radius: 14px;"
+        "  background-color: rgba(80,80,88,0.55);"
+        "}"
+        "QProgressBar::chunk {"
+        "  border-radius: 13px;"
+        "  background-color: rgba(90,160,220,0.95);"
+        "}"
+    ));
+
+    m_installProgressTimer = new QTimer(this);
+    m_installProgressTimer->setInterval(45);
+    connect(m_installProgressTimer, &QTimer::timeout, this, &AppCardWidget::tickInstallProgress);
+
+    m_installedBadge = new QLabel(tr("Installed"), this);
+    m_installedBadge->setAlignment(Qt::AlignCenter);
+    m_installedBadge->setFixedHeight(44);
+    m_installedBadge->setMinimumWidth(108);
+    m_installedBadge->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    m_installedBadge->setStyleSheet(QStringLiteral(
+        "QLabel {"
+        "  border-radius: 14px;"
+        "  padding: 4px 14px;"
+        "  background-color: rgba(34, 72, 48, 0.92);"
+        "  border: 1px solid rgba(72, 160, 100, 0.55);"
+        "  color: rgba(140, 220, 160, 0.98);"
+        "  font-weight: 600;"
+        "}"
+    ));
+    m_installedBadge->hide();
+    rootLayout->addWidget(m_installedBadge, 0, Qt::AlignVCenter);
+
     m_network = sharedIconNetwork();
 }
 
-void AppCardWidget::setApp(const AppInfo &info)
+void AppCardWidget::applyInstallUiState()
+{
+    if (m_installInProgress)
+        return;
+
+    if (m_info.installed) {
+        m_installButton->hide();
+        if (m_installProgress)
+            m_installProgress->hide();
+        m_installedBadge->show();
+    } else {
+        m_installedBadge->hide();
+        m_installButton->show();
+        m_installButton->setText(tr("Install"));
+        m_installButton->setEnabled(true);
+    }
+}
+
+void AppCardWidget::setApp(const AppInfo &info, bool refreshIconNow)
 {
     const bool iconUnchanged = m_info.id == info.id
             && m_info.iconUrl == info.iconUrl
             && m_info.iconName == info.iconName;
+    const bool wasInstalled = m_info.installed;
     m_info = info;
+    if (wasInstalled && !info.installed)
+        setInstallInProgress(false);
+
     const QString cleanName = info.name.simplified();
     const QString cleanSummary = info.summary.simplified();
     const QString cleanDeveloper = info.developerName.simplified();
@@ -161,7 +226,6 @@ void AppCardWidget::setApp(const AppInfo &info)
     const int textWidth = qMax(120, width() - 56 - 32 - 96);
     m_nameLabel->setText(nameFm.elidedText(cleanName, Qt::ElideRight, textWidth));
     m_nameLabel->setToolTip(cleanName);
-    // Let the summary wrap naturally within the fixed-height card without manual elision
     m_summaryLabel->setText(cleanSummary);
     m_summaryLabel->setToolTip(info.summary);
 
@@ -177,16 +241,72 @@ void AppCardWidget::setApp(const AppInfo &info)
             m_metaLabel->clear();
     }
 
-    if (info.installed) {
-        m_installButton->setText(tr("Installed"));
+    applyInstallUiState();
+
+    if (refreshIconNow && !iconUnchanged)
+        refreshIcon();
+}
+
+void AppCardWidget::setInstalled(bool installed)
+{
+    if (m_installInProgress || m_info.installed == installed)
+        return;
+    m_info.installed = installed;
+    applyInstallUiState();
+}
+
+void AppCardWidget::setInstallInProgress(bool inProgress, int progress)
+{
+    m_installInProgress = inProgress;
+    if (!m_installButton || !m_installProgress)
+        return;
+
+    if (inProgress) {
+        m_installedBadge->hide();
+        m_installButton->show();
         m_installButton->setEnabled(false);
-    } else {
-        m_installButton->setText(tr("Install"));
-        m_installButton->setEnabled(true);
+        m_installButton->setText(QString());
+        if (progress >= 0) {
+            m_installProgressTimer->stop();
+            m_installProgress->setValue(qBound(0, progress, 100));
+        } else {
+            m_installProgressValue = 0;
+            m_installProgress->setValue(0);
+            m_installProgressTimer->start();
+        }
+        m_installProgress->show();
+        layoutInstallProgress();
+        return;
     }
 
-    if (!iconUnchanged)
-        refreshIcon();
+    m_installProgressTimer->stop();
+    m_installProgress->hide();
+    applyInstallUiState();
+}
+
+void AppCardWidget::layoutInstallProgress()
+{
+    if (!m_installButton || !m_installProgress)
+        return;
+    const int margin = 3;
+    m_installProgress->setGeometry(margin,
+                                   margin,
+                                   m_installButton->width() - 2 * margin,
+                                   m_installButton->height() - 2 * margin);
+}
+
+void AppCardWidget::tickInstallProgress()
+{
+    m_installProgressValue += 3;
+    if (m_installProgressValue > 100)
+        m_installProgressValue = 0;
+    m_installProgress->setValue(m_installProgressValue);
+}
+
+void AppCardWidget::resizeEvent(QResizeEvent *event)
+{
+    QFrame::resizeEvent(event);
+    layoutInstallProgress();
 }
 
 void AppCardWidget::patchIcon(const AppInfo &info)
@@ -202,7 +322,6 @@ void AppCardWidget::patchIcon(const AppInfo &info)
 
 void AppCardWidget::refreshIcon()
 {
-    // Always set a deterministic placeholder first to avoid transient oversized draws.
     QIcon placeholder = QIcon::fromTheme(QStringLiteral("application-x-executable"));
     if (placeholder.isNull())
         placeholder = QIcon::fromTheme(QStringLiteral("applications-internet"));
@@ -250,7 +369,19 @@ void AppCardWidget::refreshIcon()
 
 void AppCardWidget::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton && childAt(event->position().toPoint()) != m_installButton)
+    if (event->button() == Qt::LeftButton) {
+        const QPoint pos = event->position().toPoint();
+        QWidget *child = childAt(pos);
+        while (child && child != this) {
+            if (child == m_installButton)
+                break;
+            child = child->parentWidget();
+        }
+        if (child == m_installButton) {
+            QFrame::mousePressEvent(event);
+            return;
+        }
         emit openDetailsRequested();
+    }
     QFrame::mousePressEvent(event);
 }

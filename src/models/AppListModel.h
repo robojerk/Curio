@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QAbstractListModel>
+#include <QSet>
 #include <QVector>
 
 #include "AppInfo.h"
@@ -14,7 +15,11 @@ public:
         NameRole,
         SummaryRole,
         VersionRole,
-        InstalledRole
+        InstalledRole,
+        IconUrlRole,
+        IconNameRole,
+        DeveloperRole,
+        SkeletonRole
     };
 
     explicit AppListModel(QObject *parent = nullptr);
@@ -25,6 +30,7 @@ public:
 
     void setApps(const QVector<AppInfo> &apps);
     void patchApps(const QVector<AppInfo> &updates);
+    void syncInstalledFlags(const QSet<QString> &installedIds);
     AppInfo appAt(int row) const;
 
 private:
