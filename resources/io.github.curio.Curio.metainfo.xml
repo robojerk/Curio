@@ -9,6 +9,7 @@
     <p>Curio is a GUI Flatpak store with search, install, update, and category browsing.</p>
   </description>
   <launchable type="desktop-id">io.github.curio.Curio.desktop</launchable>
+  <icon type="stock">io.github.curio.Curio</icon>
   <developer id="io.github.curio">
     <name>Curio Contributors</name>
   </developer>

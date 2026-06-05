@@ -11,12 +11,87 @@
 #include <QDebug>
 
 namespace {
+
 void setGErrorString(GError *error, QString *errorOut)
 {
     if (errorOut && error)
         *errorOut = QString::fromUtf8(error->message);
 }
+
+/** Locale/Debug/GL/VAAPI/extension runtimes — not shown in the summary row count. */
+bool isRuntimeExtensionId(const QString &id)
+{
+    return id.endsWith(QStringLiteral(".Locale"))
+            || id.endsWith(QStringLiteral(".Debug"))
+            || id.contains(QStringLiteral(".Platform.GL."))
+            || id.contains(QStringLiteral(".Platform.VAAPI."))
+            || id.contains(QStringLiteral(".Platform.codecs-extra"))
+            || id.contains(QStringLiteral(".Platform.openh264"));
 }
+
+void mergeNewestRuntimeBranch(QHash<QString, QString> *newestById, const QString &id, const QString &branch)
+{
+    if (id.isEmpty() || branch.isEmpty())
+        return;
+    const auto it = newestById->constFind(id);
+    if (it == newestById->cend() || QString::compare(branch, it.value()) > 0)
+        newestById->insert(id, branch);
+}
+
+void collectNewestInstalledRuntimeBranches(FlatpakInstallation *installation,
+                                           QHash<QString, QString> *newestById)
+{
+    if (!installation || !newestById)
+        return;
+
+    g_autoptr(GError) error = nullptr;
+    g_autoptr(GPtrArray) refs =
+            flatpak_installation_list_installed_refs(installation, nullptr, &error);
+    if (!refs)
+        return;
+
+    for (guint i = 0; i < refs->len; ++i) {
+        auto *installedRef = FLATPAK_INSTALLED_REF(g_ptr_array_index(refs, i));
+        if (flatpak_ref_get_kind(FLATPAK_REF(installedRef)) != FLATPAK_REF_KIND_RUNTIME)
+            continue;
+
+        const QString id = QString::fromUtf8(flatpak_ref_get_name(FLATPAK_REF(installedRef)));
+        const char *branch = flatpak_ref_get_branch(FLATPAK_REF(installedRef));
+        if (id.isEmpty() || !branch || branch[0] == '\0')
+            continue;
+        mergeNewestRuntimeBranch(newestById, id, QString::fromUtf8(branch));
+    }
+}
+
+bool isSupersededRuntimeBranch(const QString &id,
+                               const QString &branch,
+                               const QHash<QString, QString> &newestById)
+{
+    const auto it = newestById.constFind(id);
+    if (it == newestById.cend())
+        return false;
+    return branch != it.value();
+}
+
+QVector<AppInfo> dedupeRuntimeUpdatesByRef(QVector<AppInfo> updates)
+{
+    QHash<QString, AppInfo> byRef;
+    for (const AppInfo &info : updates) {
+        const QString key = info.installedFlatpakRef.trimmed();
+        if (key.isEmpty())
+            continue;
+        const auto it = byRef.find(key);
+        if (it == byRef.end()) {
+            byRef.insert(key, info);
+            continue;
+        }
+        if (info.installationScope == QStringLiteral("user"))
+            it.value() = info;
+    }
+    return byRef.values().toVector();
+}
+
+} // namespace
 
 FlatpakInstallationService::FlatpakInstallationService()
 {
@@ -45,8 +120,9 @@ void FlatpakInstallationService::openInstallationPair(FlatpakScope scope,
 
 #ifdef CURIO_SANDBOXED_LIBFLATPAK
     if (scope == FlatpakScope::User) {
-        const QString home = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
-        const QString userPath = home + QStringLiteral("/.local/share/flatpak");
+        // Host ~/.local/share/flatpak is bind-mounted at $XDG_DATA_HOME/flatpak in the sandbox.
+        const QString userPath = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+                + QStringLiteral("/flatpak");
         g_autoptr(GFile) userInstall = g_file_new_for_path(userPath.toUtf8().constData());
         silent = flatpak_installation_new_for_path(userInstall, TRUE, nullptr, &error);
     } else {
@@ -205,7 +281,8 @@ QVector<AppInfo> FlatpakInstallationService::listAvailableUpdates()
     return apps;
 }
 
-QVector<AppInfo> FlatpakInstallationService::listAvailableRuntimeUpdatesForScope(FlatpakScope scope)
+QVector<AppInfo> FlatpakInstallationService::listAvailableRuntimeUpdatesForScope(
+        FlatpakScope scope, const QHash<QString, QString> &newestBranches)
 {
     QVector<AppInfo> apps;
     FlatpakInstallation *installation = silentInstallation(scope);
@@ -231,6 +308,12 @@ QVector<AppInfo> FlatpakInstallationService::listAvailableRuntimeUpdatesForScope
         AppInfo info = FlatpakRefMapper::appFromInstalledRef(installedRef, scope);
         if (info.id.isEmpty() || info.installedFlatpakRef.isEmpty())
             continue;
+        if (isRuntimeExtensionId(info.id))
+            continue;
+
+        const QString branch = info.version.trimmed();
+        if (isSupersededRuntimeBranch(info.id, branch, newestBranches))
+            continue;
 
         info.isRuntimeUpdate = true;
         info.remoteUpdateAvailable = true;
@@ -249,10 +332,16 @@ QVector<AppInfo> FlatpakInstallationService::listAvailableRuntimeUpdatesForScope
 QVector<AppInfo> FlatpakInstallationService::listAvailableRuntimeUpdates()
 {
     QMutexLocker lock(&m_mutex);
+    QHash<QString, QString> newestBranches;
+    if (FlatpakInstallation *system = m_systemSilent)
+        collectNewestInstalledRuntimeBranches(system, &newestBranches);
+    if (FlatpakInstallation *user = m_userSilent)
+        collectNewestInstalledRuntimeBranches(user, &newestBranches);
+
     QVector<AppInfo> apps;
-    apps += listAvailableRuntimeUpdatesForScope(FlatpakScope::System);
-    apps += listAvailableRuntimeUpdatesForScope(FlatpakScope::User);
-    return apps;
+    apps += listAvailableRuntimeUpdatesForScope(FlatpakScope::System, newestBranches);
+    apps += listAvailableRuntimeUpdatesForScope(FlatpakScope::User, newestBranches);
+    return dedupeRuntimeUpdatesByRef(apps);
 }
 
 QVector<QPair<QString, QString>> FlatpakInstallationService::listRemotes()

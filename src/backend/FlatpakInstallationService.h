@@ -66,7 +66,8 @@ private:
                                     const QString &remoteName) const;
     QVector<AppInfo> listInstalledAppsForScope(FlatpakScope scope);
     QVector<AppInfo> listAvailableUpdatesForScope(FlatpakScope scope);
-    QVector<AppInfo> listAvailableRuntimeUpdatesForScope(FlatpakScope scope);
+    QVector<AppInfo> listAvailableRuntimeUpdatesForScope(
+            FlatpakScope scope, const QHash<QString, QString> &newestInstalledBranches);
     QVector<AppInfo> searchAppsOnInstallation(FlatpakInstallation *installation,
                                               const QString &query,
                                               const QString &remoteLabel);

@@ -1,4 +1,5 @@
 #include "FlatpakBackend.h"
+#include "SandboxedFlatpakEnv.h"
 #include "AppStreamProvider.h"
 #include "CatalogCache.h"
 #include "FlatpakInstallationService.h"
@@ -1010,7 +1011,7 @@ QVector<AppInfo> fetchCatalogAppsSubprocess(const QString &repoId,
     }
 
     QProcess proc;
-    proc.start(QStringLiteral("flatpak"),
+    proc.start(SandboxedFlatpakEnv::flatpakExecutable(),
                {QStringLiteral("remote-ls"),
                 repoId,
                 QStringLiteral("--app"),
@@ -1631,7 +1632,7 @@ void FlatpakBackend::launchApp(const QString &appId)
     const QString trimmed = appId.trimmed();
     if (trimmed.isEmpty())
         return;
-    QProcess::startDetached(QStringLiteral("flatpak"),
+    QProcess::startDetached(SandboxedFlatpakEnv::flatpakExecutable(),
                             {QStringLiteral("run"), trimmed});
 }
 
@@ -2058,13 +2059,13 @@ struct RemoteUpdateScanResult
 
 int runtimeUpdateDisplayCount(const QVector<AppInfo> &updates)
 {
-    QSet<QString> keys;
+    QSet<QString> refs;
     for (const AppInfo &info : updates) {
-        if (info.id.isEmpty())
-            continue;
-        keys.insert(info.id + QLatin1Char('|') + info.version);
+        const QString ref = info.installedFlatpakRef.trimmed();
+        if (!ref.isEmpty())
+            refs.insert(ref);
     }
-    return keys.size();
+    return refs.size();
 }
 
 } // namespace

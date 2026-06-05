@@ -25,12 +25,33 @@
   ],
   "modules": [
     {
+      "name": "flatpak-host-wrappers",
+      "buildsystem": "simple",
+      "build-commands": [
+        "install -Dm755 bwrap-host-wrapper.sh /app/bin/bwrap-host-wrapper",
+        "install -Dm755 flatpak-host-wrapper.sh /app/bin/flatpak-host-wrapper"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "path": "bwrap-host-wrapper.sh"
+        },
+        {
+          "type": "file",
+          "path": "flatpak-host-wrapper.sh"
+        }
+      ]
+    },
+    {
       "name": "curio",
       "buildsystem": "cmake-ninja",
       "builddir": true,
       "config-opts": [
         "-DCMAKE_BUILD_TYPE=Release",
         "-DCURIO_SANDBOXED_LIBFLATPAK=ON"
+      ],
+      "post-install": [
+        "gtk-update-icon-cache -q -t -f ${FLATPAK_DEST}/share/icons/hicolor || true"
       ],
       "sources": [
         {

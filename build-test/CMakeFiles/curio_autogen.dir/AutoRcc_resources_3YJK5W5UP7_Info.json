@@ -1,0 +1,22 @@
+{
+	"BUILD_DIR" : "/home/rob/Documents/Projects/curio/build-test/curio_autogen",
+	"CMAKE_BINARY_DIR" : "/home/rob/Documents/Projects/curio/build-test",
+	"CMAKE_CURRENT_BINARY_DIR" : "/home/rob/Documents/Projects/curio/build-test",
+	"CMAKE_CURRENT_SOURCE_DIR" : "/home/rob/Documents/Projects/curio",
+	"CMAKE_SOURCE_DIR" : "/home/rob/Documents/Projects/curio",
+	"CROSS_CONFIG" : false,
+	"GENERATOR" : "Unix Makefiles",
+	"INCLUDE_DIR" : "/home/rob/Documents/Projects/curio/build-test/curio_autogen/include",
+	"INPUTS" : [ "/home/rob/Documents/Projects/curio/resources/icon.png" ],
+	"LOCK_FILE" : "/home/rob/Documents/Projects/curio/build-test/CMakeFiles/curio_autogen.dir/AutoRcc_resources_3YJK5W5UP7_Lock.lock",
+	"MULTI_CONFIG" : false,
+	"OPTIONS" : [ "-name", "resources" ],
+	"OUTPUT_CHECKSUM" : "3YJK5W5UP7",
+	"OUTPUT_NAME" : "qrc_resources.cpp",
+	"RCC_EXECUTABLE" : "/usr/lib/qt6/rcc",
+	"RCC_LIST_OPTIONS" : [ "--list" ],
+	"SETTINGS_FILE" : "/home/rob/Documents/Projects/curio/build-test/CMakeFiles/curio_autogen.dir/AutoRcc_resources_3YJK5W5UP7_Used.txt",
+	"SOURCE" : "/home/rob/Documents/Projects/curio/resources/resources.qrc",
+	"USE_BETTER_GRAPH" : true,
+	"VERBOSITY" : 0
+}

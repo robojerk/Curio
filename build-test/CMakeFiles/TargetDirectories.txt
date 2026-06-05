@@ -1,0 +1,12 @@
+/home/rob/Documents/Projects/curio/build-test/CMakeFiles/curio.dir
+/home/rob/Documents/Projects/curio/build-test/CMakeFiles/curio-catalog-worker.dir
+/home/rob/Documents/Projects/curio/build-test/CMakeFiles/edit_cache.dir
+/home/rob/Documents/Projects/curio/build-test/CMakeFiles/rebuild_cache.dir
+/home/rob/Documents/Projects/curio/build-test/CMakeFiles/list_install_components.dir
+/home/rob/Documents/Projects/curio/build-test/CMakeFiles/install.dir
+/home/rob/Documents/Projects/curio/build-test/CMakeFiles/install/local.dir
+/home/rob/Documents/Projects/curio/build-test/CMakeFiles/install/strip.dir
+/home/rob/Documents/Projects/curio/build-test/CMakeFiles/curio_autogen_timestamp_deps.dir
+/home/rob/Documents/Projects/curio/build-test/CMakeFiles/curio_autogen.dir
+/home/rob/Documents/Projects/curio/build-test/CMakeFiles/curio-catalog-worker_autogen_timestamp_deps.dir
+/home/rob/Documents/Projects/curio/build-test/CMakeFiles/curio-catalog-worker_autogen.dir

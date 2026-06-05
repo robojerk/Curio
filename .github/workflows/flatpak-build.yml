@@ -68,7 +68,21 @@ jobs:
           cache-key: curio-${{ matrix.arch }}-${{ steps.meta.outputs.tag }}-${{ github.sha }}
 
       - name: Write checksum
-        run: sha256sum "${{ steps.meta.outputs.bundle }}" > "${{ steps.meta.outputs.bundle }}.sha256"
+        shell: bash
+        run: |
+          ws="${{ github.workspace }}"
+          cd "$ws"
+          sha256sum "${{ steps.meta.outputs.bundle }}" > "${{ steps.meta.outputs.bundle }}.sha256"
+
+      - name: Upload workflow artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: curio-flatpak-${{ matrix.arch }}
+          path: |
+            ${{ steps.meta.outputs.bundle }}
+            ${{ steps.meta.outputs.bundle }}.sha256
+            flatpak/io.github.curio.Curio.json
 
       - name: Upload to GitHub Release
         if: github.event_name == 'release' && env.ACT != 'true'
@@ -82,13 +96,3 @@ jobs:
           overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload workflow artifact
-        if: github.event_name == 'workflow_dispatch' && env.ACT != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: curio-flatpak-${{ matrix.arch }}
-          path: |
-            ${{ steps.meta.outputs.bundle }}
-            ${{ steps.meta.outputs.bundle }}.sha256
-            flatpak/io.github.curio.Curio.json

@@ -1,0 +1,1 @@
+/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/curio-catalog-worker.dir/link.d "CMakeFiles/curio-catalog-worker.dir/curio-catalog-worker_autogen/mocs_compilation.cpp.o" "CMakeFiles/curio-catalog-worker.dir/src/tools/catalog_worker.cpp.o" "CMakeFiles/curio-catalog-worker.dir/src/backend/SandboxedFlatpakEnv.cpp.o" -o curio-catalog-worker  /usr/lib/libQt6Core.so.6.11.0

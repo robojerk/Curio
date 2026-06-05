@@ -5,6 +5,7 @@
 #include <QStandardPaths>
 #include <QTimer>
 
+#include "backend/SandboxedFlatpakEnv.h"
 #include "ui/MainWindow.h"
 
 namespace {
@@ -40,14 +41,19 @@ QString installedDesktopFileName()
 
 int main(int argc, char *argv[])
 {
+    SandboxedFlatpakEnv::configure();
     QApplication app(argc, argv);
     configureFlatpakIconThemePaths();
     app.setApplicationName("Curio");
     app.setApplicationDisplayName("Curio");
     app.setOrganizationName("Curio");
     const QString desktopFile = installedDesktopFileName();
-    if (!desktopFile.isEmpty())
-        app.setDesktopFileName(desktopFile);
+    if (!desktopFile.isEmpty()) {
+        QString desktopId = desktopFile;
+        if (desktopId.endsWith(QStringLiteral(".desktop")))
+            desktopId.chop(8);
+        app.setDesktopFileName(desktopId);
+    }
     app.setWindowIcon(QIcon(":/icons/curio"));
 
     MainWindow w;

@@ -5,6 +5,7 @@
 #include <QRegularExpression>
 #include <QTextStream>
 
+#include "backend/SandboxedFlatpakEnv.h"
 #include "models/AppInfo.h"
 
 namespace {
@@ -19,7 +20,7 @@ QString catalogPageUrl(const QString &repoId, const QString &appId)
 QVector<AppInfo> loadCatalogViaFlatpakCli(const QString &repoId)
 {
     QProcess proc;
-    proc.start(QStringLiteral("flatpak"),
+    proc.start(SandboxedFlatpakEnv::flatpakExecutable(),
                {QStringLiteral("remote-ls"),
                 repoId,
                 QStringLiteral("--app"),
@@ -60,6 +61,7 @@ QVector<AppInfo> loadCatalogViaFlatpakCli(const QString &repoId)
 
 int main(int argc, char *argv[])
 {
+    SandboxedFlatpakEnv::configure();
     QCoreApplication app(argc, argv);
     const QString repoId = argc > 1 ? QString::fromLocal8Bit(argv[1]).trimmed()
                                     : QStringLiteral("flathub");

@@ -71,6 +71,7 @@ set(SOURCES
     ${SRC_DIR}/backend/CurioSettings.cpp
     ${SRC_DIR}/backend/TrackedBuildMatcher.cpp
     ${SRC_DIR}/backend/CatalogCache.cpp
+    ${SRC_DIR}/backend/SandboxedFlatpakEnv.cpp
     ${SRC_DIR}/ui/TrackedBuildSetupDialog.cpp
 )
 
@@ -102,6 +103,7 @@ set(HEADERS
     ${SRC_DIR}/backend/CurioSettings.h
     ${SRC_DIR}/backend/TrackedBuildMatcher.h
     ${SRC_DIR}/backend/CatalogCache.h
+    ${SRC_DIR}/backend/SandboxedFlatpakEnv.h
     ${SRC_DIR}/ui/TrackedBuildSetupDialog.h
 )
 
@@ -139,18 +141,47 @@ install(TARGETS curio RUNTIME DESTINATION bin)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/curio.desktop
         DESTINATION share/applications
         RENAME io.github.curio.Curio.desktop)
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png
-        DESTINATION share/icons/hicolor/512x512/apps
-        RENAME io.github.curio.Curio.png)
+file(GLOB CURIO_ICON_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/hicolor/*/apps/io.github.curio.Curio.png")
+if(CURIO_ICON_FILES)
+  foreach(icon_file IN LISTS CURIO_ICON_FILES)
+    string(REGEX REPLACE ".*/hicolor/([0-9]+)x([0-9]+)/apps/.*" "\\1" icon_px "${icon_file}")
+    if(icon_px GREATER 512)
+      message(WARNING "Skipping ${icon_file}: Flatpak allows hicolor icons up to 512x512")
+      continue()
+    endif()
+    string(REGEX REPLACE ".*/hicolor/([0-9]+x[0-9]+)/apps/.*" "\\1" icon_size "${icon_file}")
+    install(FILES "${icon_file}"
+            DESTINATION "share/icons/hicolor/${icon_size}/apps")
+  endforeach()
+else()
+  message(WARNING "No hicolor icons found; run: ./research/scripts/resize_icons.sh")
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png
+          DESTINATION share/icons/hicolor/512x512/apps
+          RENAME io.github.curio.Curio.png)
+endif()
+set(CURIO_PIXMAP "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/hicolor/512x512/apps/io.github.curio.Curio.png")
+if(EXISTS "${CURIO_PIXMAP}")
+  install(FILES "${CURIO_PIXMAP}" DESTINATION share/pixmaps RENAME io.github.curio.Curio.png)
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png")
+  install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png
+          DESTINATION share/pixmaps
+          RENAME io.github.curio.Curio.png)
+endif()
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/resources/io.github.curio.Curio.metainfo.xml
         DESTINATION share/metainfo)
 
 add_executable(curio-catalog-worker
     ${SRC_DIR}/tools/catalog_worker.cpp
+    ${SRC_DIR}/backend/SandboxedFlatpakEnv.cpp
 )
 target_include_directories(curio-catalog-worker PRIVATE
     ${SRC_DIR}
     ${SRC_DIR}/models
+    ${SRC_DIR}/backend
+)
+target_compile_definitions(curio-catalog-worker PRIVATE
+    $<$<BOOL:${CURIO_SANDBOXED_LIBFLATPAK}>:CURIO_SANDBOXED_LIBFLATPAK=1>
 )
 target_link_libraries(curio-catalog-worker PRIVATE Qt6::Core)
 install(TARGETS curio-catalog-worker RUNTIME DESTINATION bin)
