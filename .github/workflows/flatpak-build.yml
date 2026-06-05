@@ -70,8 +70,8 @@ jobs:
       - name: Write checksum
         shell: bash
         run: |
-          ws="${{ github.workspace }}"
-          cd "$ws"
+          # github.workspace is the host path; inside the job container use GITHUB_WORKSPACE.
+          cd "${GITHUB_WORKSPACE}"
           sha256sum "${{ steps.meta.outputs.bundle }}" > "${{ steps.meta.outputs.bundle }}.sha256"
 
       - name: Upload workflow artifact
