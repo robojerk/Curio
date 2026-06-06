@@ -446,6 +446,8 @@ FlatpakBackend::FlatpakBackend(QObject *parent)
             &FlatpakBackend::operationProgress);
     connect(m_transactionRunner, &FlatpakTransactionRunner::operationFinished, this, [this](const Operation &op) {
         if (op.status == OperationStatus::Succeeded) {
+            if (op.type == OperationType::Install || op.type == OperationType::Update)
+                SandboxedFlatpakEnv::repairExportedDesktopExecPaths();
             finalizeTrackedInstall(op);
             refreshInstalled();
         } else if (m_pendingTrackedInstalls.contains(op.appId)) {
