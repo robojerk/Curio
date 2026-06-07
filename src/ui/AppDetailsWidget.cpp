@@ -226,6 +226,20 @@ AppDetailsWidget::AppDetailsWidget(FlatpakBackend *backend, QWidget *parent)
     layout->addWidget(m_summaryLabel);
     layout->addSpacing(16);
 
+    m_releaseHeading = new QLabel(this);
+    m_releaseHeading->setFont(sectionFont);
+    m_releaseHeading->setVisible(false);
+    layout->addWidget(m_releaseHeading);
+
+    m_releaseLabel = new QLabel(this);
+    m_releaseLabel->setWordWrap(true);
+    m_releaseLabel->setTextFormat(Qt::PlainText);
+    m_releaseLabel->setAlignment(Qt::AlignTop);
+    m_releaseLabel->setStyleSheet(QStringLiteral("padding: 8px 0;"));
+    m_releaseLabel->setVisible(false);
+    layout->addWidget(m_releaseLabel);
+    layout->addSpacing(16);
+
     layout->addWidget(linksHeading);
     layout->addWidget(m_linksView);
     layout->addSpacing(16);
@@ -315,6 +329,8 @@ void AppDetailsWidget::applyMetadataPatch(const AppInfo &patch)
     fill(m_info.helpUrl, patch.helpUrl);
     fill(m_info.donateUrl, patch.donateUrl);
     fill(m_info.translateUrl, patch.translateUrl);
+    fill(m_info.latestReleaseVersion, patch.latestReleaseVersion);
+    fill(m_info.latestReleaseNotes, patch.latestReleaseNotes);
     if (!patch.categories.isEmpty())
         m_info.categories = patch.categories;
     if (!patch.screenshotUrls.isEmpty())
@@ -353,18 +369,36 @@ void AppDetailsWidget::setApp(const AppInfo &info)
         description = info.summary;
     m_summaryLabel->setText(description);
 
+    if (!info.latestReleaseVersion.isEmpty() || !info.latestReleaseNotes.isEmpty()) {
+        if (!info.latestReleaseVersion.isEmpty()) {
+            m_releaseHeading->setText(tr("Changes in version %1").arg(info.latestReleaseVersion));
+        } else {
+            m_releaseHeading->setText(tr("Release notes"));
+        }
+        m_releaseHeading->setVisible(true);
+        m_releaseLabel->setText(info.latestReleaseNotes);
+        m_releaseLabel->setVisible(!info.latestReleaseNotes.isEmpty());
+    } else {
+        m_releaseHeading->clear();
+        m_releaseHeading->setVisible(false);
+        m_releaseLabel->clear();
+        m_releaseLabel->setVisible(false);
+    }
+
     QStringList links;
     const QString githubUrl = githubUrlForApp(info);
     if (!githubUrl.isEmpty()) {
         links << QStringLiteral("<a href=\"%1\">GitHub</a>").arg(githubUrl.toHtmlEscaped());
     }
+    if (!info.bugtrackerUrl.isEmpty())
+        links << QStringLiteral("<a href=\"%1\">Report an Issue</a>").arg(info.bugtrackerUrl.toHtmlEscaped());
+    if (!info.vcsUrl.isEmpty() && info.vcsUrl != githubUrl && info.vcsUrl != info.homepageUrl) {
+        links << QStringLiteral("<a href=\"%1\">Browse Source Code</a>")
+                       .arg(info.vcsUrl.toHtmlEscaped());
+    }
     if (!info.homepageUrl.isEmpty() && info.homepageUrl != githubUrl) {
         links << QStringLiteral("<a href=\"%1\">Project Website</a>")
                        .arg(info.homepageUrl.toHtmlEscaped());
-    }
-    if (!info.vcsUrl.isEmpty() && info.vcsUrl != githubUrl && info.vcsUrl != info.homepageUrl) {
-        links << QStringLiteral("<a href=\"%1\">Source Repository</a>")
-                       .arg(info.vcsUrl.toHtmlEscaped());
     }
     const QString catalogUrl = FlatpakRemoteCatalog::catalogPageUrlForApp(info.repoId, info.id);
     if (!catalogUrl.isEmpty()) {
@@ -375,8 +409,6 @@ void AppDetailsWidget::setApp(const AppInfo &info)
         links << QStringLiteral("<a href=\"%1\">Repository</a>")
                      .arg(info.remoteRepoUrl.toHtmlEscaped());
     }
-    if (!info.bugtrackerUrl.isEmpty())
-        links << QStringLiteral("<a href=\"%1\">Issue Tracker</a>").arg(info.bugtrackerUrl.toHtmlEscaped());
     if (!info.helpUrl.isEmpty())
         links << QStringLiteral("<a href=\"%1\">Help</a>").arg(info.helpUrl.toHtmlEscaped());
     if (!info.donateUrl.isEmpty())

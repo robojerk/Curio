@@ -34,6 +34,10 @@ struct AppInfo
     QString translateUrl;
     QStringList categories;
 
+    /** Latest stable release from AppStream / Flathub appstream API. */
+    QString latestReleaseVersion;
+    QString latestReleaseNotes;
+
     // Optional tracked build metadata (Git-hosted release feeds)
     QString trackedBuildProviderId;
     QString trackedBuildRepoSlug;

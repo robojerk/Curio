@@ -8,9 +8,98 @@
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QSet>
+#include <QTextDocumentFragment>
 #include <QUrl>
 
 namespace {
+
+QString htmlToPlainText(const QString &html)
+{
+    if (html.isEmpty())
+        return QString();
+    const QString plain = QTextDocumentFragment::fromHtml(html).toPlainText().trimmed();
+    return plain.isEmpty() ? html.trimmed() : plain;
+}
+
+QString pickScreenshotUrl(const QJsonArray &sizes)
+{
+    QString bestUrl;
+    int bestWidth = -1;
+    for (const QJsonValue &sizeVal : sizes) {
+        const QJsonObject sizeObj = sizeVal.toObject();
+        const QString src = sizeObj.value(QStringLiteral("src")).toString().trimmed();
+        if (src.isEmpty())
+            continue;
+        if (src.contains(QStringLiteral("_orig.")))
+            return src;
+        bool ok = false;
+        const int width = sizeObj.value(QStringLiteral("width")).toString().toInt(&ok);
+        if (!ok || width >= bestWidth) {
+            bestWidth = width;
+            bestUrl = src;
+        }
+    }
+    return bestUrl;
+}
+
+AppInfo parseFlathubAppstream(const QJsonObject &obj, const QString &appId)
+{
+    AppInfo info;
+    info.id = appId;
+    info.repoId = QStringLiteral("flathub");
+    info.storePageUrl = QStringLiteral("https://flathub.org/apps/%1").arg(appId);
+    info.name = obj.value(QStringLiteral("name")).toString().trimmed();
+    if (info.name.isEmpty())
+        info.name = AppDisplayNames::fromAppId(appId);
+    info.summary = obj.value(QStringLiteral("summary")).toString().trimmed();
+    const QString description = obj.value(QStringLiteral("description")).toString().trimmed();
+    if (!description.isEmpty())
+        info.longDescription = htmlToPlainText(description);
+    info.developerName = obj.value(QStringLiteral("developer_name")).toString().trimmed();
+    info.projectLicense = obj.value(QStringLiteral("project_license")).toString().trimmed();
+    info.iconUrl = obj.value(QStringLiteral("icon")).toString().trimmed();
+    info.iconName = appId;
+
+    const QJsonObject urls = obj.value(QStringLiteral("urls")).toObject();
+    info.homepageUrl = urls.value(QStringLiteral("homepage")).toString().trimmed();
+    info.vcsUrl = urls.value(QStringLiteral("vcs_browser")).toString().trimmed();
+    info.bugtrackerUrl = urls.value(QStringLiteral("bugtracker")).toString().trimmed();
+    info.helpUrl = urls.value(QStringLiteral("help")).toString().trimmed();
+    info.donateUrl = urls.value(QStringLiteral("donation")).toString().trimmed();
+    info.translateUrl = urls.value(QStringLiteral("translate")).toString().trimmed();
+
+    for (const QJsonValue &catVal : obj.value(QStringLiteral("categories")).toArray()) {
+        const QString cat = catVal.toString().trimmed();
+        if (!cat.isEmpty() && !info.categories.contains(cat))
+            info.categories.append(cat);
+    }
+
+    QSet<QString> seenScreenshots;
+    for (const QJsonValue &shotVal : obj.value(QStringLiteral("screenshots")).toArray()) {
+        const QString url = pickScreenshotUrl(shotVal.toObject().value(QStringLiteral("sizes")).toArray());
+        if (url.isEmpty())
+            continue;
+        const QString key = QUrl(url).toString(QUrl::RemoveQuery | QUrl::RemoveFragment);
+        if (seenScreenshots.contains(key))
+            continue;
+        seenScreenshots.insert(key);
+        info.screenshotUrls.append(url);
+    }
+
+    const QJsonArray releases = obj.value(QStringLiteral("releases")).toArray();
+    if (!releases.isEmpty()) {
+        const QJsonObject release = releases.first().toObject();
+        info.latestReleaseVersion = release.value(QStringLiteral("version")).toString().trimmed();
+        if (info.version.isEmpty())
+            info.version = info.latestReleaseVersion;
+        const QString releaseNotes = release.value(QStringLiteral("description")).toString().trimmed();
+        if (!releaseNotes.isEmpty())
+            info.latestReleaseNotes = htmlToPlainText(releaseNotes);
+    }
+
+    return info;
+}
 
 QVector<AppInfo> parseFlathubHits(const QJsonArray &hits)
 {
@@ -184,5 +273,59 @@ void FlathubApiClient::searchApps(const QString &query,
         if (!parseError.isEmpty())
             searchResult.errorMessage = parseError;
         onFinished(searchResult);
+    });
+}
+
+void FlathubApiClient::fetchAppstreamMetadata(
+    const QString &appId,
+    std::function<void (const FlathubAppstreamResult &)> onFinished)
+{
+    FlathubAppstreamResult result;
+    const QString trimmedId = appId.trimmed();
+    if (trimmedId.isEmpty()) {
+        result.errorMessage = QStringLiteral("App id is required");
+        onFinished(result);
+        return;
+    }
+    if (!m_networkManager) {
+        result.errorMessage = QStringLiteral("Network access manager is not available");
+        onFinished(result);
+        return;
+    }
+
+    const QUrl url(QStringLiteral("https://flathub.org/api/v2/appstream/%1").arg(trimmedId));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Curio"));
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    QNetworkReply *reply = m_networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [reply, trimmedId, onFinished = std::move(onFinished)]() mutable {
+        reply->deleteLater();
+        FlathubAppstreamResult appstreamResult;
+        if (reply->error() != QNetworkReply::NoError) {
+            appstreamResult.errorMessage = reply->errorString();
+            onFinished(appstreamResult);
+            return;
+        }
+
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        if (!doc.isObject()) {
+            appstreamResult.errorMessage = QStringLiteral("Invalid JSON response");
+            onFinished(appstreamResult);
+            return;
+        }
+
+        const QJsonObject root = doc.object();
+        if (root.contains(QStringLiteral("detail"))) {
+            appstreamResult.errorMessage = root.value(QStringLiteral("detail")).toString();
+            if (appstreamResult.errorMessage.isEmpty())
+                appstreamResult.errorMessage = QStringLiteral("App not found");
+            onFinished(appstreamResult);
+            return;
+        }
+
+        appstreamResult.app = parseFlathubAppstream(root, trimmedId);
+        onFinished(appstreamResult);
     });
 }

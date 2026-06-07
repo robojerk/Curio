@@ -20,6 +20,11 @@ struct FlathubSearchResult {
     QString errorMessage;
 };
 
+struct FlathubAppstreamResult {
+    AppInfo app;
+    QString errorMessage;
+};
+
 class FlathubApiClient : public QObject
 {
     Q_OBJECT
@@ -32,6 +37,8 @@ public:
     void fetchCollections(std::function<void (const FlathubCollectionsResult &)> onFinished);
     void searchApps(const QString &query,
                     std::function<void (const FlathubSearchResult &)> onFinished);
+    void fetchAppstreamMetadata(const QString &appId,
+                                std::function<void (const FlathubAppstreamResult &)> onFinished);
 
 private:
     QNetworkAccessManager *m_networkManager = nullptr;

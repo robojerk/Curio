@@ -201,6 +201,39 @@ void dedupeScreenshotUrls(AppInfo &app)
     app.screenshotUrls = unique;
 }
 
+void mergeMetadataFields(AppInfo *dst, const AppInfo &src)
+{
+    if (dst == nullptr || src.id.isEmpty() || dst->id != src.id)
+        return;
+
+    const auto fill = [](QString &d, const QString &s) {
+        if (!s.isEmpty())
+            d = s;
+    };
+    if (dst->name.isEmpty() || dst->name == dst->id)
+        fill(dst->name, src.name);
+    fill(dst->summary, src.summary);
+    fill(dst->longDescription, src.longDescription);
+    fill(dst->version, src.version);
+    fill(dst->iconUrl, src.iconUrl);
+    if (dst->iconName.isEmpty() || dst->iconName == dst->id)
+        fill(dst->iconName, src.iconName);
+    fill(dst->developerName, src.developerName);
+    fill(dst->projectLicense, src.projectLicense);
+    fill(dst->homepageUrl, src.homepageUrl);
+    fill(dst->vcsUrl, src.vcsUrl);
+    fill(dst->bugtrackerUrl, src.bugtrackerUrl);
+    fill(dst->helpUrl, src.helpUrl);
+    fill(dst->donateUrl, src.donateUrl);
+    fill(dst->translateUrl, src.translateUrl);
+    fill(dst->latestReleaseVersion, src.latestReleaseVersion);
+    fill(dst->latestReleaseNotes, src.latestReleaseNotes);
+    if (!src.categories.isEmpty())
+        dst->categories = src.categories;
+    if (!src.screenshotUrls.isEmpty())
+        dst->screenshotUrls = src.screenshotUrls;
+}
+
 QVector<AppInfo> pickTopByScore(const QVector<AppInfo> &apps,
                                 const std::function<int (const AppInfo &, int)> &scoreFn,
                                 int limit)
@@ -1272,17 +1305,33 @@ void FlatpakBackend::enrichAppMetadataAsync(const AppInfo &app)
 {
     if (app.id.isEmpty())
         return;
-    auto *watcher = new QFutureWatcher<AppInfo>(this);
-    connect(watcher, &QFutureWatcher<AppInfo>::finished, this, [this, watcher]() {
-        AppInfo enriched = watcher->result();
-        watcher->deleteLater();
-        emit appMetadataEnriched(enriched);
-    });
-    watcher->setFuture(QtConcurrent::run([this, app]() {
+
+    const QString repoId = app.repoId.isEmpty() ? QStringLiteral("flathub") : app.repoId;
+    const auto finishWithAppStream = [this](AppInfo copy) {
+        auto *watcher = new QFutureWatcher<AppInfo>(this);
+        connect(watcher, &QFutureWatcher<AppInfo>::finished, this, [this, watcher]() {
+            AppInfo enriched = watcher->result();
+            watcher->deleteLater();
+            emit appMetadataEnriched(enriched);
+        });
+        watcher->setFuture(QtConcurrent::run([this, copy]() {
+            AppInfo result = copy;
+            enrichAppMetadata(result);
+            return result;
+        }));
+    };
+
+    if (repoId.compare(QStringLiteral("flathub"), Qt::CaseInsensitive) != 0 || !m_flathubApiClient) {
+        finishWithAppStream(app);
+        return;
+    }
+
+    m_flathubApiClient->fetchAppstreamMetadata(app.id, [this, app, finishWithAppStream](const FlathubAppstreamResult &result) {
         AppInfo copy = app;
-        enrichAppMetadata(copy);
-        return copy;
-    }));
+        if (result.errorMessage.isEmpty() && !result.app.id.isEmpty())
+            mergeMetadataFields(&copy, result.app);
+        finishWithAppStream(copy);
+    });
 }
 
 void FlatpakBackend::patchCollectionsFromCatalogIndex(const QString &repoId)
