@@ -12,18 +12,9 @@
 
 namespace {
 
-QVector<AppInfo> parseCollectionResponse(const QByteArray &payload, QString *errorOut)
+QVector<AppInfo> parseFlathubHits(const QJsonArray &hits)
 {
     QVector<AppInfo> apps;
-    const QJsonDocument doc = QJsonDocument::fromJson(payload);
-    if (!doc.isObject()) {
-        if (errorOut)
-            *errorOut = QStringLiteral("Invalid JSON response");
-        return apps;
-    }
-
-    const QJsonObject root = doc.object();
-    const QJsonArray hits = root.value(QStringLiteral("hits")).toArray();
     apps.reserve(hits.size());
 
     for (const QJsonValue &hitVal : hits) {
@@ -42,6 +33,10 @@ QVector<AppInfo> parseCollectionResponse(const QByteArray &payload, QString *err
         info.summary = hit.value(QStringLiteral("summary")).toString();
         info.iconUrl = hit.value(QStringLiteral("icon")).toString();
         info.developerName = hit.value(QStringLiteral("developer_name")).toString();
+        info.projectLicense = hit.value(QStringLiteral("project_license")).toString();
+        const QString description = hit.value(QStringLiteral("description")).toString().trimmed();
+        if (!description.isEmpty())
+            info.longDescription = description;
         const QString mainCategory = hit.value(QStringLiteral("main_categories")).toString().trimmed();
         if (!mainCategory.isEmpty())
             info.categories.append(mainCategory);
@@ -56,6 +51,18 @@ QVector<AppInfo> parseCollectionResponse(const QByteArray &payload, QString *err
         apps.append(info);
     }
     return apps;
+}
+
+QVector<AppInfo> parseCollectionResponse(const QByteArray &payload, QString *errorOut)
+{
+    const QJsonDocument doc = QJsonDocument::fromJson(payload);
+    if (!doc.isObject()) {
+        if (errorOut)
+            *errorOut = QStringLiteral("Invalid JSON response");
+        return {};
+    }
+
+    return parseFlathubHits(doc.object().value(QStringLiteral("hits")).toArray());
 }
 
 } // namespace
@@ -133,4 +140,49 @@ void FlathubApiClient::fetchCollections(
     startRequest(QStringLiteral("/collection/popular") + page, &FlathubCollectionsResult::popular);
     startRequest(QStringLiteral("/collection/recently-added") + page, &FlathubCollectionsResult::recent);
     startRequest(QStringLiteral("/collection/recently-updated") + page, &FlathubCollectionsResult::updated);
+}
+
+void FlathubApiClient::searchApps(const QString &query,
+                                   std::function<void (const FlathubSearchResult &)> onFinished)
+{
+    FlathubSearchResult result;
+    const QString trimmed = query.trimmed();
+    if (trimmed.isEmpty()) {
+        onFinished(result);
+        return;
+    }
+    if (!m_networkManager) {
+        result.errorMessage = QStringLiteral("Network access manager is not available");
+        onFinished(result);
+        return;
+    }
+
+    const QUrl url(QStringLiteral("https://flathub.org/api/v2/search"));
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Curio"));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    QJsonObject body;
+    body.insert(QStringLiteral("query"), trimmed);
+    body.insert(QStringLiteral("page"), 1);
+    body.insert(QStringLiteral("per_page"), kSearchPageSize);
+    const QByteArray payload = QJsonDocument(body).toJson(QJsonDocument::Compact);
+
+    QNetworkReply *reply = m_networkManager->post(request, payload);
+    connect(reply, &QNetworkReply::finished, this, [reply, onFinished = std::move(onFinished)]() mutable {
+        reply->deleteLater();
+        FlathubSearchResult searchResult;
+        if (reply->error() != QNetworkReply::NoError) {
+            searchResult.errorMessage = reply->errorString();
+            onFinished(searchResult);
+            return;
+        }
+        QString parseError;
+        searchResult.apps = parseCollectionResponse(reply->readAll(), &parseError);
+        if (!parseError.isEmpty())
+            searchResult.errorMessage = parseError;
+        onFinished(searchResult);
+    });
 }

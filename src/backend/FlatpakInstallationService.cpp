@@ -6,6 +6,7 @@
 
 #include <QDir>
 #include <QMutexLocker>
+#include <QRegularExpression>
 #include <QSet>
 #include <QStandardPaths>
 #include <QDebug>
@@ -36,6 +37,32 @@ void mergeNewestRuntimeBranch(QHash<QString, QString> *newestById, const QString
     const auto it = newestById->constFind(id);
     if (it == newestById->cend() || QString::compare(branch, it.value()) > 0)
         newestById->insert(id, branch);
+}
+
+QString foldSearchText(const QString &text)
+{
+    QString folded = text.toLower();
+    folded.remove(QRegularExpression(QStringLiteral("[^a-z0-9]")));
+    return folded;
+}
+
+bool appMatchesSearchQuery(const AppInfo &app, const QString &queryLower, const QString &queryFolded)
+{
+    if (queryLower.isEmpty())
+        return false;
+
+    const QString idLower = app.id.toLower();
+    const QString nameLower = app.name.toLower();
+    const QString summaryLower = app.summary.toLower();
+    if (idLower.contains(queryLower) || nameLower.contains(queryLower) || summaryLower.contains(queryLower))
+        return true;
+
+    if (queryFolded.isEmpty())
+        return false;
+
+    return foldSearchText(app.id).contains(queryFolded)
+            || foldSearchText(app.name).contains(queryFolded)
+            || foldSearchText(app.summary).contains(queryFolded);
 }
 
 void collectNewestInstalledRuntimeBranches(FlatpakInstallation *installation,
@@ -406,6 +433,7 @@ QVector<AppInfo> FlatpakInstallationService::searchAppsOnInstallation(FlatpakIns
     }
 
     const QString queryLower = trimmedQuery.toLower();
+    const QString queryFolded = foldSearchText(trimmedQuery);
     QSet<QString> seen;
 
     for (guint remoteIndex = 0; remoteIndex < remotes->len; ++remoteIndex) {
@@ -421,14 +449,8 @@ QVector<AppInfo> FlatpakInstallationService::searchAppsOnInstallation(FlatpakIns
             if (seen.contains(app.id))
                 continue;
 
-            const QString idLower = app.id.toLower();
-            const QString nameLower = app.name.toLower();
-            const QString summaryLower = app.summary.toLower();
-            if (!idLower.contains(queryLower)
-                    && !nameLower.contains(queryLower)
-                    && !summaryLower.contains(queryLower)) {
+            if (!appMatchesSearchQuery(app, queryLower, queryFolded))
                 continue;
-            }
 
             AppInfo match = app;
             if (!remoteLabel.isEmpty())

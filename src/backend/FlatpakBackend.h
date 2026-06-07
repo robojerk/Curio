@@ -80,6 +80,7 @@ public:
 signals:
     void installedAppsUpdated(const QVector<AppInfo> &apps);
     void searchResultsUpdated(const QVector<AppInfo> &apps);
+    void searchResultsPatched(const QVector<AppInfo> &apps);
     void storeSuggestionsUpdated(const QString &repoId, const QVector<AppInfo> &apps);
     void storeCollectionsUpdated(const QString &repoId,
                                  const QVector<AppInfo> &trending,
@@ -175,6 +176,11 @@ private:
     static QString todayUtcCollectionDay();
     void scheduleInstalledMetadataEnrichment(const QVector<AppInfo> &apps);
     void processInstalledMetadataEnrichmentBatch();
+    void publishSearchResults(const QString &query, QVector<AppInfo> apps);
+    void hydrateSearchResultsFromCache(QVector<AppInfo> &apps) const;
+    void runLibflatpakSearch(const QString &query);
+    void scheduleSearchMetadataEnrichment(const QString &query, const QVector<AppInfo> &apps);
+    void processSearchMetadataEnrichmentBatch();
 
     std::unique_ptr<FlatpakInstallationService> m_installations;
     FlatpakTransactionRunner *m_transactionRunner = nullptr;
@@ -188,7 +194,7 @@ private:
     QString m_cachePath;
     qint64 m_cacheTtlMs = 24LL * 60LL * 60LL * 1000LL;
     int m_cacheMaxEntries = 200;
-    int m_cacheSchemaVersion = 3;
+    int m_cacheSchemaVersion = 4;
     QString m_flathubCachePath;
     QVector<AppInfo> m_cachedFlathubTrending;
     QVector<AppInfo> m_cachedFlathubPopular;
@@ -222,6 +228,11 @@ private:
     QTimer *m_installedEnrichTimer = nullptr;
     QVector<AppInfo> m_installedEnrichQueue;
     int m_installedEnrichIndex = 0;
+    QString m_activeSearchQuery;
+    QTimer *m_searchEnrichTimer = nullptr;
+    QVector<AppInfo> m_searchEnrichQueue;
+    int m_searchEnrichIndex = 0;
+    QString m_searchEnrichQuery;
     QTimer *m_uiCoalesceTimer = nullptr;
     QHash<QString, AppInfo> m_pendingStorePatches;
     QString m_pendingStorePatchRepoId;

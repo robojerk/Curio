@@ -375,6 +375,13 @@ void MainWindow::setupUi()
     m_searchEdit->setPlaceholderText(tr("Search apps…"));
     contentLayout->addWidget(m_searchEdit);
 
+    m_searchHintLabel = new QLabel(this);
+    m_searchHintLabel->setAlignment(Qt::AlignCenter);
+    m_searchHintLabel->setWordWrap(true);
+    m_searchHintLabel->setVisible(false);
+    m_searchHintLabel->setStyleSheet(QStringLiteral("color: gray; padding: 12px 24px;"));
+    contentLayout->addWidget(m_searchHintLabel);
+
     m_storeTemplateTabs = new QTabBar(this);
     m_storeTemplateTabs->setObjectName(QStringLiteral("storeTemplateTabs"));
     m_storeTemplateTabs->setExpanding(false);
@@ -1017,9 +1024,24 @@ void MainWindow::connectBackend()
 
     connect(m_backend, &FlatpakBackend::searchResultsUpdated,
             this, [this](const QVector<AppInfo> &apps) {
+                if (m_topSectionIndex != 1)
+                    return;
+                m_searchInProgress = false;
                 m_showExploreSkeleton = false;
                 m_exploreModel->setApps(apps);
+                updateSearchHintLabel();
                 scheduleExploreRebuild();
+            });
+
+    connect(m_backend, &FlatpakBackend::searchResultsPatched,
+            this, [this](const QVector<AppInfo> &apps) {
+                if (m_topSectionIndex != 1 || apps.isEmpty())
+                    return;
+                m_exploreModel->patchApps(apps);
+                for (const AppInfo &app : apps) {
+                    if (AppCardWidget *card = storeCardForAppId(app.id))
+                        card->patchIcon(app);
+                }
             });
 
     connect(m_backend, &FlatpakBackend::storeCollectionsUpdated,
@@ -1250,6 +1272,50 @@ void MainWindow::clearExploreGridLayout()
             widget->deleteLater();
         delete item;
     }
+    purgeOrphanExploreWidgets();
+}
+
+void MainWindow::purgeOrphanExploreWidgets()
+{
+    if (!m_exploreContainer)
+        return;
+    QLayout *layout = m_exploreContainer->layout();
+    for (QObject *child : m_exploreContainer->children()) {
+        auto *widget = qobject_cast<QWidget *>(child);
+        if (!widget || widget == m_exploreContainer)
+            continue;
+        if (layout && layout->indexOf(widget) >= 0)
+            continue;
+        widget->deleteLater();
+    }
+}
+
+QString MainWindow::storeExploreEmptyText() const
+{
+    return m_storeFeedLoading ? tr("Refreshing catalog…") : tr("No results found.");
+}
+
+void MainWindow::updateSearchHintLabel()
+{
+    if (!m_searchHintLabel)
+        return;
+
+    const bool onSearchTab = (m_topSectionIndex == 1);
+    m_searchHintLabel->setVisible(onSearchTab && m_exploreModel && m_exploreModel->rowCount() == 0);
+
+    if (!onSearchTab)
+        return;
+
+    const QString query = m_searchEdit ? m_searchEdit->text().trimmed() : QString();
+    if (query.isEmpty()) {
+        m_searchHintLabel->setText(tr("Search apps by name to browse Flathub."));
+        return;
+    }
+    if (m_searchInProgress) {
+        m_searchHintLabel->setText(tr("Searching…"));
+        return;
+    }
+    m_searchHintLabel->setText(tr("No results for “%1”.").arg(query));
 }
 
 void MainWindow::rebuildExploreCards()
@@ -1290,10 +1356,15 @@ void MainWindow::rebuildExploreCards()
     m_exploreContainer->setUpdatesEnabled(false);
 
     while (QLayoutItem *item = grid->takeAt(0)) {
-        if (item->widget())
-            item->widget()->setParent(m_exploreContainer);
+        if (QWidget *widget = item->widget()) {
+            if (qobject_cast<AppCardWidget *>(widget))
+                widget->setParent(m_exploreContainer);
+            else
+                widget->deleteLater();
+        }
         delete item;
     }
+    purgeOrphanExploreWidgets();
 
     const int count = apps.size();
 
@@ -1302,16 +1373,22 @@ void MainWindow::rebuildExploreCards()
             m_storeCardsByAppId.remove(it.key());
             it.value()->deleteLater();
         }
-        const QString emptyText = m_storeFeedLoading
-                ? tr("Refreshing catalog…")
-                : tr("No results found.");
-        auto *emptyLabel = new QLabel(emptyText, m_exploreContainer);
-        emptyLabel->setAlignment(Qt::AlignCenter);
-        emptyLabel->setStyleSheet(QStringLiteral("color: gray; padding: 24px;"));
-        grid->addWidget(emptyLabel, 0, 0, 1, columns);
+        if (m_topSectionIndex == 1) {
+            updateSearchHintLabel();
+        } else {
+            auto *emptyLabel = new QLabel(storeExploreEmptyText(), m_exploreContainer);
+            emptyLabel->setAlignment(Qt::AlignCenter);
+            emptyLabel->setStyleSheet(QStringLiteral("color: gray; padding: 24px;"));
+            grid->addWidget(emptyLabel, 0, 0, 1, columns);
+            if (m_searchHintLabel)
+                m_searchHintLabel->setVisible(false);
+        }
         m_exploreContainer->setUpdatesEnabled(true);
         return;
     }
+
+    if (m_searchHintLabel)
+        m_searchHintLabel->setVisible(false);
 
     QSet<QString> usedIds;
     for (int i = 0; i < count; ++i) {
@@ -1329,7 +1406,7 @@ void MainWindow::rebuildExploreCards()
                 installStoreApp(app);
             });
         }
-        card->setApp(app, false);
+        card->setApp(app);
         m_storeCardsByAppId.insert(app.id, card);
         const int row = i / columns;
         const int col = i % columns;
@@ -2095,17 +2172,23 @@ void MainWindow::onSearchTextChanged(const QString &text)
     if (trimmed.isEmpty()) {
         m_searchDebounceTimer->stop();
         m_lastSearchQuery.clear();
+        m_searchInProgress = false;
         m_exploreModel->setApps({});
+        updateSearchHintLabel();
         scheduleExploreRebuild();
         return;
     }
     if (!m_delaySearchEnabled) {
-        if (trimmed != m_lastSearchQuery) {
+        if (trimmed != m_lastSearchQuery || (m_exploreModel && m_exploreModel->rowCount() == 0)) {
             m_lastSearchQuery = trimmed;
+            m_searchInProgress = true;
+            updateSearchHintLabel();
             m_backend->search(trimmed);
         }
         return;
     }
+    m_searchInProgress = true;
+    updateSearchHintLabel();
     m_searchDebounceTimer->start(m_searchDebounceMs);
 }
 
@@ -2115,8 +2198,15 @@ void MainWindow::onSearchDebounceFired()
         return;
 
     const QString query = m_searchEdit->text().trimmed();
-    if (!query.isEmpty() && query != m_lastSearchQuery) {
+    if (query.isEmpty()) {
+        m_searchInProgress = false;
+        updateSearchHintLabel();
+        return;
+    }
+    if (query != m_lastSearchQuery || (m_exploreModel && m_exploreModel->rowCount() == 0)) {
         m_lastSearchQuery = query;
+        m_searchInProgress = true;
+        updateSearchHintLabel();
         m_backend->search(query);
     }
 }
@@ -2170,15 +2260,26 @@ void MainWindow::onTopTabChanged(int index)
 
     if (index == 1) {
         m_mainContent->setCurrentIndex(0); // Explore for search results
-        if (!m_searchEdit->text().trimmed().isEmpty())
-            onSearchDebounceFired();
-        else {
+        const QString query = m_searchEdit->text().trimmed();
+        if (query.isEmpty()) {
+            m_searchInProgress = false;
             m_exploreModel->setApps({});
+            updateSearchHintLabel();
             scheduleExploreRebuild();
+        } else if (m_exploreModel->rowCount() > 0) {
+            m_searchInProgress = false;
+            updateSearchHintLabel();
+            scheduleExploreRebuild();
+        } else {
+            m_lastSearchQuery.clear();
+            onSearchDebounceFired();
         }
         updateInstalledNavAttention();
         return;
     }
+
+    if (m_searchHintLabel)
+        m_searchHintLabel->setVisible(false);
 
     // Default store tab
     onStoreFeedChanged(m_storeFeedTabs->currentIndex());
@@ -2269,6 +2370,8 @@ void MainWindow::presentAppDetailsPage(const AppInfo &info)
     prepareDetailsAppInfo(details);
     m_detailsPageAppInfo = details;
     m_searchEdit->setVisible(false);
+    if (m_searchHintLabel)
+        m_searchHintLabel->setVisible(false);
     m_storeTemplateTabs->setVisible(false);
     m_storeFeedTabs->setVisible(false);
     if (m_bannerHost)
@@ -3497,8 +3600,12 @@ void MainWindow::setStoreFeedLoading(bool loading)
             m_storeStatusLabel->setVisible(false);
         }
     }
-    if (m_topSectionIndex == 0 && m_exploreModel->rowCount() == 0 && loading)
-        updateExploreSkeleton();
+    if (m_topSectionIndex == 0) {
+        if (m_exploreModel->rowCount() == 0 && loading)
+            updateExploreSkeleton();
+        else if (m_exploreModel->rowCount() == 0 && !loading)
+            scheduleExploreRebuild();
+    }
 }
 
 void MainWindow::beginStoreRefresh(bool forceRefresh)

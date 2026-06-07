@@ -657,40 +657,110 @@ void FlatpakBackend::refreshInstalled()
 void FlatpakBackend::search(const QString &query)
 {
     const QString trimmed = query.trimmed();
-    QVector<AppInfo> results;
+    m_activeSearchQuery = trimmed;
 
-    if (m_catalogCache && trimmed.size() >= 2) {
-        const QVector<AppInfo> localHits = m_catalogCache->searchLocal(QStringLiteral("flathub"), trimmed);
-        if (!localHits.isEmpty()) {
-            results = localHits;
-            applyTrackedBuildMetadata(&results);
-            emit searchResultsUpdated(results);
-        }
-    }
-
-    QVector<AppInfo> cached;
-    if (tryGetCachedSearch(query, &cached)) {
-        if (!cached.isEmpty()) {
-            applyTrackedBuildMetadata(&cached);
-            emit searchResultsUpdated(cached);
-        }
-        if (qEnvironmentVariableIsSet("CURIO_APPSTREAM_DEBUG")) {
-            qDebug() << "FlatpakBackend: cache hit for query" << query;
-        }
+    if (trimmed.isEmpty()) {
+        emit searchResultsUpdated({});
         return;
     }
 
+    QVector<AppInfo> cached;
+    if (tryGetCachedSearch(trimmed, &cached)) {
+        publishSearchResults(trimmed, std::move(cached));
+        return;
+    }
+
+    if (!m_flathubApiClient || !m_networkManager) {
+        runLibflatpakSearch(trimmed);
+        return;
+    }
+
+    m_flathubApiClient->searchApps(trimmed, [this, trimmed](const FlathubSearchResult &result) {
+        if (m_activeSearchQuery != trimmed)
+            return;
+        if (!result.errorMessage.isEmpty() || result.apps.isEmpty()) {
+            runLibflatpakSearch(trimmed);
+            return;
+        }
+        publishSearchResults(trimmed, result.apps);
+    });
+}
+
+void FlatpakBackend::publishSearchResults(const QString &query, QVector<AppInfo> apps)
+{
+    if (m_activeSearchQuery != query)
+        return;
+
+    hydrateSearchResultsFromCache(apps);
+    applyTrackedBuildMetadata(&apps);
+    putCachedSearch(query, apps);
+    emit searchResultsUpdated(apps);
+    scheduleSearchMetadataEnrichment(query, apps);
+}
+
+void FlatpakBackend::hydrateSearchResultsFromCache(QVector<AppInfo> &apps) const
+{
+    QHash<QString, AppInfo> knownIcons;
+    const auto rememberIcons = [&knownIcons](const QVector<AppInfo> &list) {
+        for (const AppInfo &app : list) {
+            if (app.id.isEmpty() || app.iconUrl.isEmpty())
+                continue;
+            knownIcons.insert(app.id, app);
+        }
+    };
+    rememberIcons(m_cachedFlathubTrending);
+    rememberIcons(m_cachedFlathubPopular);
+    rememberIcons(m_cachedFlathubRecent);
+    rememberIcons(m_cachedFlathubUpdated);
+
+    for (AppInfo &app : apps) {
+        if (!app.iconUrl.isEmpty())
+            continue;
+
+        const auto knownIt = knownIcons.constFind(app.id);
+        if (knownIt != knownIcons.cend()) {
+            app.iconUrl = knownIt->iconUrl;
+            if (!knownIt->iconName.isEmpty())
+                app.iconName = knownIt->iconName;
+            continue;
+        }
+
+        AppInfo catalogApp;
+        if (m_catalogCache && m_catalogCache->loadApp(QStringLiteral("flathub"), app.id, &catalogApp)) {
+            if (!catalogApp.iconUrl.isEmpty())
+                app.iconUrl = catalogApp.iconUrl;
+            if (!catalogApp.iconName.isEmpty())
+                app.iconName = catalogApp.iconName;
+        }
+    }
+}
+
+void FlatpakBackend::runLibflatpakSearch(const QString &query)
+{
+    const QString trimmed = query.trimmed();
+    if (trimmed.isEmpty()) {
+        publishSearchResults(trimmed, {});
+        return;
+    }
+
+    QVector<AppInfo> seedResults;
+    if (m_catalogCache && trimmed.size() >= 2) {
+        seedResults = m_catalogCache->searchLocal(QStringLiteral("flathub"), trimmed);
+        if (!seedResults.isEmpty())
+            publishSearchResults(trimmed, seedResults);
+    }
+
     if (!m_installations || !m_installations->isValid()) {
-        if (results.isEmpty())
-            emit searchResultsUpdated(results);
+        if (seedResults.isEmpty())
+            publishSearchResults(trimmed, {});
         return;
     }
 
     auto *watcher = new QFutureWatcher<QVector<AppInfo>>(this);
-    connect(watcher, &QFutureWatcher<QVector<AppInfo>>::finished, this, [this, watcher, query, results]() {
+    connect(watcher, &QFutureWatcher<QVector<AppInfo>>::finished, this, [this, watcher, query, seedResults]() {
         QVector<AppInfo> apps = watcher->result();
         QHash<QString, AppInfo> mergedById;
-        for (const AppInfo &app : results)
+        for (const AppInfo &app : seedResults)
             mergedById.insert(app.id, app);
         for (const AppInfo &app : apps) {
             auto it = mergedById.find(app.id);
@@ -702,19 +772,95 @@ void FlatpakBackend::search(const QString &query)
                     existing.summary = app.summary;
                 if (existing.version.isEmpty())
                     existing.version = app.version;
+                if (existing.iconUrl.isEmpty())
+                    existing.iconUrl = app.iconUrl;
+                if (existing.iconName.isEmpty() || existing.iconName == existing.id)
+                    existing.iconName = app.iconName.isEmpty() ? app.id : app.iconName;
             } else {
                 mergedById.insert(app.id, app);
             }
         }
-        apps = mergedById.values();
-        applyTrackedBuildMetadata(&apps);
-        putCachedSearch(query, apps);
-        emit searchResultsUpdated(apps);
+        publishSearchResults(query, mergedById.values());
         watcher->deleteLater();
     });
     watcher->setFuture(QtConcurrent::run([installations = m_installations.get(), query]() {
         return installations->searchApps(query);
     }));
+}
+
+void FlatpakBackend::scheduleSearchMetadataEnrichment(const QString &query,
+                                                      const QVector<AppInfo> &apps)
+{
+    m_searchEnrichQuery = query;
+    m_searchEnrichQueue.clear();
+    for (const AppInfo &app : apps) {
+        if (app.id.isEmpty() || !app.iconUrl.isEmpty())
+            continue;
+        m_searchEnrichQueue.append(app);
+    }
+    m_searchEnrichIndex = 0;
+
+    if (m_searchEnrichQueue.isEmpty())
+        return;
+
+    if (!m_searchEnrichTimer) {
+        m_searchEnrichTimer = new QTimer(this);
+        m_searchEnrichTimer->setSingleShot(false);
+        m_searchEnrichTimer->setInterval(50);
+        connect(m_searchEnrichTimer, &QTimer::timeout, this, [this]() {
+            processSearchMetadataEnrichmentBatch();
+        });
+    }
+    if (!m_searchEnrichTimer->isActive())
+        m_searchEnrichTimer->start();
+}
+
+void FlatpakBackend::processSearchMetadataEnrichmentBatch()
+{
+    if (m_searchEnrichQueue.isEmpty() || m_searchEnrichIndex >= m_searchEnrichQueue.size()) {
+        if (m_searchEnrichTimer)
+            m_searchEnrichTimer->stop();
+        return;
+    }
+
+    constexpr int kBatchSize = 4;
+    QVector<AppInfo> enrichedBatch;
+    enrichedBatch.reserve(kBatchSize);
+
+    while (m_searchEnrichIndex < m_searchEnrichQueue.size()
+           && enrichedBatch.size() < kBatchSize) {
+        AppInfo app = m_searchEnrichQueue.at(m_searchEnrichIndex++);
+        enrichAppMetadata(app);
+        if (!app.iconUrl.isEmpty() || (!app.iconName.isEmpty() && app.iconName != app.id))
+            enrichedBatch.append(app);
+    }
+
+    if (!enrichedBatch.isEmpty()) {
+        if (m_activeSearchQuery == m_searchEnrichQuery) {
+            QVector<AppInfo> cached;
+            if (tryGetCachedSearch(m_searchEnrichQuery, &cached)) {
+                const auto patchList = [&enrichedBatch](QVector<AppInfo> &list) {
+                    for (AppInfo &app : list) {
+                        for (const AppInfo &enriched : enrichedBatch) {
+                            if (app.id != enriched.id)
+                                continue;
+                            if (!enriched.iconUrl.isEmpty())
+                                app.iconUrl = enriched.iconUrl;
+                            if (!enriched.iconName.isEmpty())
+                                app.iconName = enriched.iconName;
+                            break;
+                        }
+                    }
+                };
+                patchList(cached);
+                putCachedSearch(m_searchEnrichQuery, cached);
+            }
+            emit searchResultsPatched(enrichedBatch);
+        }
+    }
+
+    if (m_searchEnrichIndex >= m_searchEnrichQueue.size() && m_searchEnrichTimer)
+        m_searchEnrichTimer->stop();
 }
 
 void FlatpakBackend::fetchFlathubSuggestions()
@@ -1732,6 +1878,9 @@ bool FlatpakBackend::tryGetCachedSearch(const QString &query, QVector<AppInfo> *
         return false;
 
     *apps = m_searchCache.value(key);
+    // Empty results are not cached anymore; treat stale empty entries as a miss.
+    if (apps->isEmpty())
+        return false;
     return true;
 }
 
@@ -1740,6 +1889,12 @@ void FlatpakBackend::putCachedSearch(const QString &query, const QVector<AppInfo
     const QString key = cacheKeyForQuery(query);
     if (key.isEmpty())
         return;
+    if (apps.isEmpty()) {
+        m_searchCache.remove(key);
+        m_searchCacheTimestamps.remove(key);
+        saveSearchCache();
+        return;
+    }
     m_searchCache.insert(key, apps);
     m_searchCacheTimestamps.insert(key, QDateTime::currentMSecsSinceEpoch());
 
@@ -1790,6 +1945,8 @@ void FlatpakBackend::loadSearchCache()
         QVector<AppInfo> apps;
         const QJsonArray appsArray = entryObj.value(QStringLiteral("apps")).toArray();
         apps = appsFromJsonArray(appsArray);
+        if (apps.isEmpty())
+            continue;
 
         m_searchCache.insert(key, apps);
         m_searchCacheTimestamps.insert(key, ts);

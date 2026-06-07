@@ -138,6 +138,9 @@ private:
     void completePendingUpdateCheck(bool userInitiated);
     void setStoreFeedLoading(bool loading);
     void beginStoreRefresh(bool forceRefresh = false);
+    void updateSearchHintLabel();
+    QString storeExploreEmptyText() const;
+    void purgeOrphanExploreWidgets();
     void updateInstalledRowOperation(const Operation &op, bool finished);
     void updateStoreCardOperation(const Operation &op, bool finished);
     void syncStoreFeedsInstalledState();
@@ -160,6 +163,7 @@ private:
     bool m_installedNavPulseBright = false;
     bool m_storeFeedLoading = false;
     bool m_showExploreSkeleton = false;
+    bool m_searchInProgress = false;
     QString m_appliedStoreRepoId;
     QHash<QString, InstalledRowWidget *> m_installedRowsByAppId;
     QHash<QString, QPointer<AppCardWidget>> m_storeCardsByAppId;
@@ -226,6 +230,7 @@ private:
     QLineEdit *m_codebergPatEdit = nullptr;
     QListView *m_operationsView = nullptr;
     QLineEdit *m_searchEdit = nullptr;
+    QLabel *m_searchHintLabel = nullptr;
     AppDetailsWidget *m_detailsWidget = nullptr;
 
     AppListModel *m_exploreModel = nullptr;
