@@ -3,6 +3,9 @@
 
 #include <QMetaObject>
 #include <QtConcurrent/QtConcurrent>
+#include <QAtomicInteger>
+#include <QElapsedTimer>
+#include <QThread>
 
 namespace {
 struct ProgressBridge {
@@ -118,7 +121,10 @@ void FlatpakTransactionRunner::runTransaction(
     }
 
     FlatpakInstallation *installationRef = installation;
+    // Track active transaction so shutdown can wait for libflatpak work to finish.
+    m_activeTransactions.fetchAndAddRelaxed(1);
     (void) QtConcurrent::run([this, installationRef, buildTransaction, context]() {
+        struct Defer { std::function<void()> f; ~Defer(){ if (f) f(); } } defer{[this](){ m_activeTransactions.fetchAndAddRelaxed(-1); }};
         g_autoptr(GError) error = nullptr;
         g_autoptr(FlatpakTransaction) transaction =
                 flatpak_transaction_new_for_installation(installationRef, nullptr, &error);
@@ -177,6 +183,17 @@ void FlatpakTransactionRunner::runTransaction(
                 cleanup();
         }, Qt::QueuedConnection);
     });
+}
+
+void FlatpakTransactionRunner::waitForIdle(int timeoutMs)
+{
+    QElapsedTimer t;
+    t.start();
+    while (m_activeTransactions.loadRelaxed() > 0) {
+        if (timeoutMs >= 0 && t.elapsed() > timeoutMs)
+            break;
+        QThread::msleep(20);
+    }
 }
 
 void FlatpakTransactionRunner::installFromRemote(const Operation &op,

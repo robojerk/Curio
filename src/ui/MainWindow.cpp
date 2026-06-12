@@ -1335,17 +1335,19 @@ void MainWindow::rebuildExploreCards()
     const int spacing = grid->horizontalSpacing() > 0 ? grid->horizontalSpacing() : 12;
     const int availableWidth = exploreAvailableWidth(m_exploreContainer, grid);
     const int columns = exploreColumnCount(availableWidth, spacing);
-
-    QHash<QString, AppCardWidget *> existingCards;
-    for (int i = 0; i < grid->count(); ++i) {
-        if (auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget()))
-            existingCards.insert(card->appId(), card);
-    }
+    qDebug() << "[UI] rebuildExploreCards:"
+             << "availableWidth=" << availableWidth
+             << "spacing=" << spacing
+             << "columns=" << columns
+             << "lastColumns=" << m_lastExploreColumnCount
+             << "gridCount=" << grid->count()
+             << "rowCount=" << grid->rowCount();
 
     if (sameApps && !apps.isEmpty() && columns == m_lastExploreColumnCount) {
-        for (const AppInfo &app : apps) {
-            if (AppCardWidget *card = existingCards.value(app.id))
-                card->setApp(app);
+        // Only refresh data in-place if the column count hasn't changed.
+        for (int i = 0; i < grid->count(); ++i) {
+            if (auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget()))
+                card->setApp(apps.value(i));
         }
         return;
     }
@@ -1355,13 +1357,10 @@ void MainWindow::rebuildExploreCards()
     m_lastExploreColumnCount = columns;
     m_exploreContainer->setUpdatesEnabled(false);
 
+    // Fully clear existing layout items and delete widgets to avoid leftover state.
     while (QLayoutItem *item = grid->takeAt(0)) {
-        if (QWidget *widget = item->widget()) {
-            if (qobject_cast<AppCardWidget *>(widget))
-                widget->setParent(m_exploreContainer);
-            else
-                widget->deleteLater();
-        }
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
         delete item;
     }
     purgeOrphanExploreWidgets();
@@ -1369,10 +1368,11 @@ void MainWindow::rebuildExploreCards()
     const int count = apps.size();
 
     if (count == 0) {
-        for (auto it = existingCards.constBegin(); it != existingCards.constEnd(); ++it) {
-            m_storeCardsByAppId.remove(it.key());
-            it.value()->deleteLater();
+        for (auto it = m_storeCardsByAppId.constBegin(); it != m_storeCardsByAppId.constEnd(); ++it) {
+            if (it.value())
+                it.value()->deleteLater();
         }
+        m_storeCardsByAppId.clear();
         if (m_topSectionIndex == 1) {
             updateSearchHintLabel();
         } else {
@@ -1395,17 +1395,14 @@ void MainWindow::rebuildExploreCards()
         const AppInfo &app = apps.at(i);
         usedIds.insert(app.id);
 
-        AppCardWidget *card = existingCards.take(app.id);
-        if (!card) {
-            card = new AppCardWidget(m_exploreContainer);
-            const QString appId = app.id;
-            connect(card, &AppCardWidget::openDetailsRequested, this, [this, appId]() {
-                showDetailsForApp(appId);
-            });
-            connect(card, &AppCardWidget::installRequested, this, [this, app]() {
-                installStoreApp(app);
-            });
-        }
+        AppCardWidget *card = new AppCardWidget(m_exploreContainer);
+        const QString appId = app.id;
+        connect(card, &AppCardWidget::openDetailsRequested, this, [this, appId]() {
+            showDetailsForApp(appId);
+        });
+        connect(card, &AppCardWidget::installRequested, this, [this, app]() {
+            installStoreApp(app);
+        });
         card->setApp(app);
         m_storeCardsByAppId.insert(app.id, card);
         const int row = i / columns;
@@ -1419,10 +1416,13 @@ void MainWindow::rebuildExploreCards()
         grid->setRowStretch(row, 0);
     grid->setRowStretch(grid->rowCount(), 1);
 
-    for (auto it = existingCards.constBegin(); it != existingCards.constEnd(); ++it) {
-        if (!usedIds.contains(it.key())) {
-            m_storeCardsByAppId.remove(it.key());
-            it.value()->deleteLater();
+    for (auto it = m_storeCardsByAppId.constBegin(); it != m_storeCardsByAppId.constEnd(); /* in-loop */) {
+        auto key = it.key();
+        ++it;
+        if (!usedIds.contains(key)) {
+            auto val = m_storeCardsByAppId.take(key);
+            if (val)
+                val->deleteLater();
         }
     }
 
@@ -1751,17 +1751,22 @@ void MainWindow::rebuildStoreCategoryCards()
     const int spacing = grid->horizontalSpacing() > 0 ? grid->horizontalSpacing() : 12;
     const int availableWidth = exploreAvailableWidth(m_storeCategoryCardsContainer, grid);
     const int columns = exploreColumnCount(availableWidth, spacing);
+    qDebug() << "[UI] rebuildStoreCategoryCards:"
+             << "availableWidth=" << availableWidth
+             << "spacing=" << spacing
+             << "columns=" << columns
+             << "lastColumns=" << m_lastCategoryColumnCount
+             << "gridCount=" << grid->count()
+             << "rowCount=" << grid->rowCount();
 
-    QHash<QString, AppCardWidget *> existingCards;
-    for (int i = 0; i < grid->count(); ++i) {
-        if (auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget()))
-            existingCards.insert(card->appId(), card);
-    }
-
+    // If nothing has changed and the column count is stable, just update data in-place.
     if (sameApps && !filtered.isEmpty() && columns == m_lastCategoryColumnCount) {
-        for (const AppInfo &app : filtered) {
-            if (AppCardWidget *card = existingCards.value(app.id))
-                card->setApp(app);
+        for (int i = 0; i < grid->count(); ++i) {
+            if (auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget())) {
+                const int idx = i;
+                if (idx >= 0 && idx < filtered.size())
+                    card->setApp(filtered.at(idx));
+            }
         }
         return;
     }
@@ -1772,24 +1777,14 @@ void MainWindow::rebuildStoreCategoryCards()
     m_lastCategoryColumnCount = columns;
     m_storeCategoryCardsContainer->setUpdatesEnabled(false);
 
-    if (reflowOnly) {
-        while (QLayoutItem *item = grid->takeAt(0)) {
-            if (item->widget())
-                item->widget()->setParent(m_storeCategoryCardsContainer);
-            delete item;
-        }
-    } else {
-        while (grid->count()) {
-            auto *item = grid->takeAt(0);
-            if (item->widget())
-                item->widget()->deleteLater();
-            delete item;
-        }
+    // Fully clear existing layout items to avoid layout/row bookkeeping issues.
+    while (QLayoutItem *item = grid->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
+        delete item;
     }
 
     if (filtered.isEmpty()) {
-        for (AppCardWidget *card : std::as_const(existingCards))
-            card->deleteLater();
         auto *label = new QLabel(tr("No apps found for this category."), m_storeCategoryCardsContainer);
         label->setAlignment(Qt::AlignCenter);
         label->setStyleSheet(QStringLiteral("color: gray; padding: 20px;"));
@@ -1803,32 +1798,23 @@ void MainWindow::rebuildStoreCategoryCards()
         const AppInfo &app = filtered.at(i);
         usedIds.insert(app.id);
 
-        AppCardWidget *card = existingCards.take(app.id);
-        if (!card) {
-            card = new AppCardWidget(m_storeCategoryCardsContainer);
-            const QString appId = app.id;
-            connect(card, &AppCardWidget::openDetailsRequested, this, [this, appId]() {
-                showDetailsForApp(appId);
-            });
-            connect(card, &AppCardWidget::installRequested, this, [this, app]() {
-                installStoreApp(app);
-            });
-        }
+        AppCardWidget *card = new AppCardWidget(m_storeCategoryCardsContainer);
+        const QString appId = app.id;
+        connect(card, &AppCardWidget::openDetailsRequested, this, [this, appId]() {
+            showDetailsForApp(appId);
+        });
+        connect(card, &AppCardWidget::installRequested, this, [this, app]() {
+            installStoreApp(app);
+        });
         card->setApp(app);
         m_storeCardsByAppId.insert(app.id, card);
         const int row = i / columns;
         const int col = i % columns;
-        grid->addWidget(card, row, col, Qt::AlignTop | Qt::AlignHCenter);
+        grid->addWidget(card, row, col, Qt::AlignTop);
     }
 
     for (int col = 0; col < columns; ++col)
         grid->setColumnStretch(col, 0);
-    for (auto it = existingCards.constBegin(); it != existingCards.constEnd(); ++it) {
-        if (!usedIds.contains(it.key())) {
-            m_storeCardsByAppId.remove(it.key());
-            it.value()->deleteLater();
-        }
-    }
 
     const int categoryViewportW = exploreViewportWidth(m_storeCategoryCardsContainer);
     if (categoryViewportW > 0)

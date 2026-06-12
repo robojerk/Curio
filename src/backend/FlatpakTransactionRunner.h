@@ -52,4 +52,8 @@ private:
                                         void **bridgeOut);
 
     FlatpakInstallationService *m_installations = nullptr;
+    QAtomicInt m_activeTransactions{0};
+public:
+    /** Block until active transactions reach zero or timeout (ms). */
+    void waitForIdle(int timeoutMs = 5000);
 };

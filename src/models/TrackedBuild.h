@@ -75,6 +75,9 @@ struct TrackedBuildProject
     QStringList unclassifiedTags;
     QString lastCheckedAtIso;
     QString lastError;
+    QString cachedEtag;
+    QString cachedLastModified;
+    QString nextAllowedRefreshAtIso;
 
     /** Last tracked release successfully installed via Curio (Git tag, e.g. v2.3.2). */
     QString lastAppliedReleaseTag;

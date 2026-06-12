@@ -552,10 +552,10 @@ FlatpakScope FlatpakInstallationService::scopeForAppId(const QString &appId) con
         if (m_scopeByAppId.contains(trimmed))
             return m_scopeByAppId.value(trimmed);
     }
-    if (!installedRefStringsForAppId(trimmed, FlatpakScope::User).isEmpty())
-        return FlatpakScope::User;
     if (!installedRefStringsForAppId(trimmed, FlatpakScope::System).isEmpty())
         return FlatpakScope::System;
+    if (!installedRefStringsForAppId(trimmed, FlatpakScope::User).isEmpty())
+        return FlatpakScope::User;
     return FlatpakScope::User;
 }
 

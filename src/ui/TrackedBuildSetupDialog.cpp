@@ -350,20 +350,19 @@ void TrackedBuildSetupDialog::onFetchClicked()
     setBusy(true);
     m_statusLabel->setText(tr("Fetching releases…"));
     const QPointer<TrackedBuildSetupDialog> self(this);
-    m_source->fetchReleases(probe, [self, probe, parsed](const QVector<TrackedBuildRelease> &releases,
-                                                         const QString &error) {
+    m_source->fetchReleases(probe, [self, probe, parsed](const TrackedBuildSource::FetchResult &result) {
         if (!self)
             return;
         self->setBusy(false);
-        if (!error.isEmpty()) {
-            self->m_statusLabel->setText(error);
+        if (!result.error.isEmpty()) {
+            self->m_statusLabel->setText(result.error);
             return;
         }
-        self->m_releases = releases;
-        self->m_statusLabel->setText(self->tr("Loaded %1 releases.").arg(releases.size()));
+        self->m_releases = result.releases;
+        self->m_statusLabel->setText(self->tr("Loaded %1 releases.").arg(result.releases.size()));
         if (parsed)
             self->applyInstalledAppMatches(*parsed);
-        self->applySuggestions(TrackedBuildClassifier::suggestFromReleases(releases));
+        self->applySuggestions(TrackedBuildClassifier::suggestFromReleases(result.releases));
         self->updatePreview();
     });
 }

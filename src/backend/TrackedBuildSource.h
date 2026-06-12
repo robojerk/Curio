@@ -18,10 +18,20 @@ class TrackedBuildSource : public QObject
 {
     Q_OBJECT
 public:
+    struct FetchResult {
+        QVector<TrackedBuildRelease> releases;
+        QString error;
+        QString etag;
+        QString lastModified;
+        QString nextAllowedRefreshAtIso;
+        bool notModified = false;
+        bool rateLimited = false;
+    };
+
     explicit TrackedBuildSource(QNetworkAccessManager *networkManager, QObject *parent = nullptr);
 
     void fetchReleases(const TrackedBuildProject &project,
-                       const std::function<void(const QVector<TrackedBuildRelease> &, const QString &)> &callback);
+                       const std::function<void(const FetchResult &)> &callback);
 
     static QVector<TrackedBuildRelease> parseGithubReleases(const QByteArray &payload, QString *error);
     static QVector<TrackedBuildRelease> parseGitLabReleases(const QByteArray &payload, QString *error);

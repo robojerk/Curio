@@ -24,6 +24,7 @@ class FlatpakBackend : public QObject
     Q_OBJECT
 public:
     explicit FlatpakBackend(QObject *parent = nullptr);
+    ~FlatpakBackend();
 
     void refreshInstalled();
     void search(const QString &query);

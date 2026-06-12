@@ -37,6 +37,7 @@
 #include <QUuid>
 #include <QEventLoop>
 #include <QtConcurrent/QtConcurrent>
+#include <QThreadPool>
 #include <QFutureWatcher>
 #include <limits>
 #include <QSet>
@@ -387,6 +388,9 @@ QJsonObject trackedBuildToJson(const TrackedBuildProject &project)
     obj.insert(QStringLiteral("latestNightlyAssetUrl"), project.latestNightlyAssetUrl);
     obj.insert(QStringLiteral("lastCheckedAtIso"), project.lastCheckedAtIso);
     obj.insert(QStringLiteral("lastError"), project.lastError);
+    obj.insert(QStringLiteral("cachedEtag"), project.cachedEtag);
+    obj.insert(QStringLiteral("cachedLastModified"), project.cachedLastModified);
+    obj.insert(QStringLiteral("nextAllowedRefreshAtIso"), project.nextAllowedRefreshAtIso);
     obj.insert(QStringLiteral("lastAppliedReleaseTag"), project.lastAppliedReleaseTag);
     obj.insert(QStringLiteral("lastAppliedAssetUrl"), project.lastAppliedAssetUrl);
     obj.insert(QStringLiteral("lastAppliedAtIso"), project.lastAppliedAtIso);
@@ -432,6 +436,9 @@ TrackedBuildProject trackedBuildFromJson(const QJsonObject &obj)
     project.latestNightlyAssetUrl = obj.value(QStringLiteral("latestNightlyAssetUrl")).toString();
     project.lastCheckedAtIso = obj.value(QStringLiteral("lastCheckedAtIso")).toString();
     project.lastError = obj.value(QStringLiteral("lastError")).toString();
+    project.cachedEtag = obj.value(QStringLiteral("cachedEtag")).toString();
+    project.cachedLastModified = obj.value(QStringLiteral("cachedLastModified")).toString();
+    project.nextAllowedRefreshAtIso = obj.value(QStringLiteral("nextAllowedRefreshAtIso")).toString();
     project.lastAppliedReleaseTag = obj.value(QStringLiteral("lastAppliedReleaseTag")).toString();
     project.lastAppliedAssetUrl = obj.value(QStringLiteral("lastAppliedAssetUrl")).toString();
     project.lastAppliedAtIso = obj.value(QStringLiteral("lastAppliedAtIso")).toString();
@@ -513,6 +520,30 @@ FlatpakBackend::FlatpakBackend(QObject *parent)
     if (qEnvironmentVariableIsSet("CURIO_APPSTREAM_DEBUG")) {
         qDebug() << "FlatpakBackend: AppStream provider available =" << m_appStreamProvider->isAvailable();
     }
+}
+
+FlatpakBackend::~FlatpakBackend()
+{
+    if (m_uiCoalesceTimer)
+        m_uiCoalesceTimer->stop();
+    if (m_storeIconEnrichTimer)
+        m_storeIconEnrichTimer->stop();
+    if (m_storeIconEnrichDeferTimer)
+        m_storeIconEnrichDeferTimer->stop();
+    if (m_installedEnrichTimer)
+        m_installedEnrichTimer->stop();
+    if (m_searchEnrichTimer)
+        m_searchEnrichTimer->stop();
+
+    // Give the transaction runner a chance to finish libflatpak work.
+    if (m_transactionRunner)
+        m_transactionRunner->waitForIdle(10000);
+
+    // Wait for any QtConcurrent jobs to finish so FlatpakInstallationService's mutex
+    // is not destroyed while still locked by background tasks.
+    QThreadPool::globalInstance()->waitForDone();
+
+    m_installations.reset();
 }
 
 bool FlatpakBackend::flathubCollectionsFreshForToday() const
@@ -1495,7 +1526,11 @@ void FlatpakBackend::install(const QString &appId, const QString &repoId)
     op.status = OperationStatus::Running;
     op.message = tr("Installing…");
     emit operationStarted(op);
-    m_transactionRunner->installFromRemote(op, repoId, FlatpakScope::User);
+
+    const FlatpakScope scope = m_installations
+            ? m_installations->scopeForAppId(appId)
+            : FlatpakScope::User;
+    m_transactionRunner->installFromRemote(op, repoId, scope);
 }
 
 void FlatpakBackend::runFlatpakInstallForOperation(const Operation &op,
@@ -2405,8 +2440,16 @@ void FlatpakBackend::refreshTrackedBuildsForIndex(int index, int generation)
         return;
     }
     TrackedBuildProject project = m_trackedBuildProjects.at(index);
-    m_trackedBuildSource->fetchReleases(project, [this, index, generation](const QVector<TrackedBuildRelease> &releases,
-                                                               const QString &error) {
+    if (!project.nextAllowedRefreshAtIso.isEmpty()) {
+        const QDateTime nextAllowed = QDateTime::fromString(project.nextAllowedRefreshAtIso, Qt::ISODate);
+        if (nextAllowed.isValid() && nextAllowed > QDateTime::currentDateTimeUtc()) {
+            if (--m_pendingTrackedBuildChecks <= 0)
+                completeTrackedBuildRefreshPass();
+            return;
+        }
+    }
+
+    m_trackedBuildSource->fetchReleases(project, [this, index, generation](const TrackedBuildSource::FetchResult &result) {
         if (generation != m_trackedBuildRefreshGeneration) {
             return;
         }
@@ -2416,10 +2459,18 @@ void FlatpakBackend::refreshTrackedBuildsForIndex(int index, int generation)
             return;
         }
         TrackedBuildProject &project = m_trackedBuildProjects[index];
-        if (!error.isEmpty()) {
-            project.lastError = error;
+        if (!result.etag.isEmpty())
+            project.cachedEtag = result.etag;
+        if (!result.lastModified.isEmpty())
+            project.cachedLastModified = result.lastModified;
+        if (!result.nextAllowedRefreshAtIso.isEmpty())
+            project.nextAllowedRefreshAtIso = result.nextAllowedRefreshAtIso;
+
+        if (!result.error.isEmpty()) {
+            project.lastError = result.error;
         } else {
-            classifyAndStoreTrackedRelease(&project, releases);
+            if (!result.notModified)
+                classifyAndStoreTrackedRelease(&project, result.releases);
             project.lastError.clear();
         }
         project.lastCheckedAtIso = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);

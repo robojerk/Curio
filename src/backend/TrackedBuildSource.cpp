@@ -148,16 +148,22 @@ void TrackedBuildSource::storeReleaseCache(const QString &cacheKey,
 
 void TrackedBuildSource::fetchReleases(
     const TrackedBuildProject &project,
-    const std::function<void(const QVector<TrackedBuildRelease> &, const QString &)> &callback)
+    const std::function<void(const FetchResult &)> &callback)
 {
     if (!m_networkManager) {
-        if (callback)
-            callback({}, QObject::tr("Network unavailable"));
+        if (callback) {
+            FetchResult result;
+            result.error = QObject::tr("Network unavailable");
+            callback(result);
+        }
         return;
     }
     if (project.repoSlug.isEmpty()) {
-        if (callback)
-            callback({}, QObject::tr("Repository slug is required"));
+        if (callback) {
+            FetchResult result;
+            result.error = QObject::tr("Repository slug is required");
+            callback(result);
+        }
         return;
     }
 
@@ -168,58 +174,103 @@ void TrackedBuildSource::fetchReleases(
     QVector<TrackedBuildRelease> cachedReleases;
     QString cachedError;
     if (tryReleaseCache(cacheKey, false, &cachedReleases, &cachedError)) {
-        if (callback)
-            callback(cachedReleases, cachedError);
+        if (callback) {
+            FetchResult result;
+            result.releases = cachedReleases;
+            result.error = cachedError;
+            callback(result);
+        }
         return;
     }
 
     QNetworkRequest request{QUrl(url)};
     applyProviderHeaders(request, kind);
     applyAuthHeaders(request, kind);
+    if (!project.cachedEtag.isEmpty())
+        request.setRawHeader("If-None-Match", project.cachedEtag.toUtf8());
+    if (!project.cachedLastModified.isEmpty())
+        request.setRawHeader("If-Modified-Since", project.cachedLastModified.toUtf8());
 
     QNetworkReply *reply = m_networkManager->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, kind, cacheKey, callback]() {
-        QVector<TrackedBuildRelease> releases;
-        QString error;
+        FetchResult result;
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const QByteArray payload = reply->readAll();
 
+        const QByteArray responseEtag = reply->rawHeader("ETag");
+        const QByteArray responseLastModified = reply->rawHeader("Last-Modified");
+        const QByteArray responseRateLimitReset = reply->rawHeader("X-RateLimit-Reset");
+        if (!responseEtag.isEmpty())
+            result.etag = QString::fromUtf8(responseEtag);
+        if (!responseLastModified.isEmpty())
+            result.lastModified = QString::fromUtf8(responseLastModified);
+        if (!responseRateLimitReset.isEmpty()) {
+            bool ok = false;
+            const qint64 resetSeconds = QString::fromUtf8(responseRateLimitReset).toLongLong(&ok);
+            if (ok) {
+                result.nextAllowedRefreshAtIso = QDateTime::fromSecsSinceEpoch(resetSeconds, Qt::UTC)
+                        .toString(Qt::ISODate);
+            }
+        }
+
+        if (status == 304) {
+            result.notModified = true;
+            if (tryReleaseCache(cacheKey, true, &result.releases, nullptr)) {
+                result.error.clear();
+            }
+            if (callback)
+                callback(result);
+            reply->deleteLater();
+            return;
+        }
+
         if (status >= 400) {
-            error = httpErrorMessage(status, payload, kind);
+            result.error = httpErrorMessage(status, payload, kind);
+            if (status == 403 || status == 429)
+                result.rateLimited = true;
             if ((status == 403 || status == 429)
-                    && tryReleaseCache(cacheKey, true, &releases, nullptr) && !releases.isEmpty()) {
+                    && tryReleaseCache(cacheKey, true, &result.releases, nullptr)
+                    && !result.releases.isEmpty()) {
+                result.error.clear();
+                if (result.nextAllowedRefreshAtIso.isEmpty()) {
+                    result.nextAllowedRefreshAtIso = QDateTime::currentDateTimeUtc()
+                            .addSecs(30 * 60)
+                            .toString(Qt::ISODate);
+                }
                 if (callback)
-                    callback(releases, QString());
+                    callback(result);
                 reply->deleteLater();
                 return;
             }
         } else if (reply->error() != QNetworkReply::NoError) {
-            error = reply->errorString();
-            if (tryReleaseCache(cacheKey, true, &releases, nullptr) && !releases.isEmpty()) {
+            result.error = reply->errorString();
+            if (tryReleaseCache(cacheKey, true, &result.releases, nullptr)
+                    && !result.releases.isEmpty()) {
+                result.error.clear();
                 if (callback)
-                    callback(releases, QString());
+                    callback(result);
                 reply->deleteLater();
                 return;
             }
         } else {
             switch (kind) {
             case GitHostKind::GitLab:
-                releases = parseGitLabReleases(payload, &error);
+                result.releases = parseGitLabReleases(payload, &result.error);
                 break;
             case GitHostKind::Codeberg:
-                releases = parseForgejoReleases(payload, &error);
+                result.releases = parseForgejoReleases(payload, &result.error);
                 break;
             case GitHostKind::GitHub:
             default:
-                releases = parseGithubReleases(payload, &error);
+                result.releases = parseGithubReleases(payload, &result.error);
                 break;
             }
-            if (error.isEmpty())
-                storeReleaseCache(cacheKey, releases, QString());
+            if (result.error.isEmpty())
+                storeReleaseCache(cacheKey, result.releases, QString());
         }
 
         if (callback)
-            callback(releases, error);
+            callback(result);
         reply->deleteLater();
     });
 }
