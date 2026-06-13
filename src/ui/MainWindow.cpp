@@ -1416,14 +1416,16 @@ void MainWindow::rebuildExploreCards()
         grid->setRowStretch(row, 0);
     grid->setRowStretch(grid->rowCount(), 1);
 
-    for (auto it = m_storeCardsByAppId.constBegin(); it != m_storeCardsByAppId.constEnd(); /* in-loop */) {
-        auto key = it.key();
-        ++it;
-        if (!usedIds.contains(key)) {
-            auto val = m_storeCardsByAppId.take(key);
-            if (val)
-                val->deleteLater();
-        }
+    // Collect stale keys first, then remove them to avoid hash corruption during iteration
+    QStringList staleKeys;
+    for (auto it = m_storeCardsByAppId.constBegin(); it != m_storeCardsByAppId.constEnd(); ++it) {
+        if (!usedIds.contains(it.key()))
+            staleKeys.append(it.key());
+    }
+    for (const QString &key : staleKeys) {
+        auto val = m_storeCardsByAppId.take(key);
+        if (val)
+            val->deleteLater();
     }
 
     const int viewportW = exploreViewportWidth(m_exploreContainer);
@@ -1966,10 +1968,12 @@ void MainWindow::pruneStaleStoreCards()
 {
     QStringList stale;
     stale.reserve(m_storeCardsByAppId.size());
+    // Collect null entries first to avoid hash corruption during iteration
     for (auto it = m_storeCardsByAppId.constBegin(); it != m_storeCardsByAppId.constEnd(); ++it) {
         if (!it.value())
             stale.append(it.key());
     }
+    // Remove entries after iteration
     for (const QString &id : stale)
         m_storeCardsByAppId.remove(id);
 }
