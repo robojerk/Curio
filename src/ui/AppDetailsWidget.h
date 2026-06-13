@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QHash>
 #include <QWidget>
 
 #include "backend/NetworkAccessUtils.h"
@@ -36,6 +37,7 @@ public:
 signals:
     void backClicked();
     void installRequested(const AppInfo &info);
+    void removeRequested(const AppInfo &info);
 
 private slots:
     void onInstallClicked();
@@ -46,6 +48,8 @@ private slots:
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void updateButtonStates();
@@ -53,6 +57,8 @@ private:
     void cancelPendingLoads();
     void layoutInstallProgress();
     void tickInstallProgress();
+    void showScreenshotOverlayForUrl(const QString &sourceUrl);
+    void hideScreenshotOverlay();
 
     AppInfo m_info;
     FlatpakBackend *m_backend = nullptr;
@@ -82,4 +88,9 @@ private:
     QPushButton *m_removeButton = nullptr;
     QPushButton *m_updateButton = nullptr;
     QPushButton *m_manageButton = nullptr;
+    QWidget *m_screenshotOverlay = nullptr;
+    QLabel *m_screenshotOverlayImage = nullptr;
+    QHash<QLabel *, QPixmap> m_screenshotFullPixmaps;
+    QHash<QLabel *, QString> m_screenshotSourceUrls;
+    quint64 m_screenshotOverlayGeneration = 0;
 };

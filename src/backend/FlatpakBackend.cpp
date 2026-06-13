@@ -492,10 +492,17 @@ FlatpakBackend::FlatpakBackend(QObject *parent)
         if (op.status == OperationStatus::Succeeded) {
             if (op.type == OperationType::Install || op.type == OperationType::Update)
                 SandboxedFlatpakEnv::repairExportedDesktopExecPaths();
+            if (op.type == OperationType::Uninstall && m_uninstallDeleteUserData.remove(op.appId)) {
+                QString deleteError;
+                if (!deleteAppUserData(op.appId, &deleteError) && !deleteError.isEmpty())
+                    qWarning() << "FlatpakBackend: failed to delete user data for" << op.appId << deleteError;
+            }
             finalizeTrackedInstall(op);
             refreshInstalled();
         } else if (m_pendingTrackedInstalls.contains(op.appId)) {
             m_pendingTrackedInstalls.remove(op.appId);
+        } else if (op.type == OperationType::Uninstall) {
+            m_uninstallDeleteUserData.remove(op.appId);
         }
         emit operationFinished(op);
     });
@@ -1871,7 +1878,34 @@ void FlatpakBackend::launchApp(const QString &appId)
                             {QStringLiteral("run"), trimmed});
 }
 
-void FlatpakBackend::uninstall(const QString &appId)
+bool FlatpakBackend::deleteAppUserData(const QString &appId, QString *errorOut) const
+{
+    const QString trimmed = appId.trimmed();
+    if (trimmed.isEmpty()) {
+        if (errorOut)
+            *errorOut = tr("App id is empty");
+        return false;
+    }
+
+    const QString dataDir = QDir::homePath() + QStringLiteral("/.var/app/") + trimmed;
+    QDir dir(dataDir);
+    if (!dir.exists()) {
+        if (errorOut)
+            errorOut->clear();
+        return true;
+    }
+
+    if (!dir.removeRecursively()) {
+        if (errorOut)
+            *errorOut = tr("Could not remove %1").arg(dataDir);
+        return false;
+    }
+    if (errorOut)
+        errorOut->clear();
+    return true;
+}
+
+void FlatpakBackend::uninstall(const QString &appId, bool deleteUserData)
 {
     if (!m_transactionRunner) {
         Operation op;
@@ -1884,14 +1918,20 @@ void FlatpakBackend::uninstall(const QString &appId)
         return;
     }
 
+    const QString trimmed = appId.trimmed();
+    if (deleteUserData)
+        m_uninstallDeleteUserData.insert(trimmed);
+    else
+        m_uninstallDeleteUserData.remove(trimmed);
+
     Operation op;
-    op.appId = appId;
+    op.appId = trimmed;
     op.type = OperationType::Uninstall;
     op.status = OperationStatus::Running;
-    op.message = tr("Uninstalling…");
+    op.message = deleteUserData ? tr("Uninstalling and deleting user data…") : tr("Uninstalling…");
     emit operationStarted(op);
 
-    const FlatpakScope scope = flatpakScopeFromString(installationScopeForApp(appId));
+    const FlatpakScope scope = flatpakScopeFromString(installationScopeForApp(trimmed));
     m_transactionRunner->uninstallRef(op, scope);
 }
 

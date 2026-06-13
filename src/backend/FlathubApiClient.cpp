@@ -1,5 +1,6 @@
 #include "FlathubApiClient.h"
 #include "AppDisplayNames.h"
+#include "FlathubMediaUtils.h"
 #include "NetworkAccessUtils.h"
 
 
@@ -34,23 +35,7 @@ QString htmlToPlainText(const QString &html)
 
 QString pickScreenshotUrl(const QJsonArray &sizes)
 {
-    QString bestUrl;
-    int bestWidth = -1;
-    for (const QJsonValue &sizeVal : sizes) {
-        const QJsonObject sizeObj = sizeVal.toObject();
-        const QString src = sizeObj.value(QStringLiteral("src")).toString().trimmed();
-        if (src.isEmpty())
-            continue;
-        if (src.contains(QStringLiteral("_orig.")))
-            return src;
-        bool ok = false;
-        const int width = sizeObj.value(QStringLiteral("width")).toString().toInt(&ok);
-        if (!ok || width >= bestWidth) {
-            bestWidth = width;
-            bestUrl = src;
-        }
-    }
-    return bestUrl;
+    return FlathubMediaUtils::pickScreenshotUrlFromSizes(sizes);
 }
 
 AppInfo parseFlathubAppstream(const QJsonObject &obj, const QString &appId)

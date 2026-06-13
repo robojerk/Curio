@@ -6,7 +6,8 @@
 #include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
-#include <QIcon>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QLabel>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -17,12 +18,14 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
+#include <QSizePolicy>
 #include <QTimer>
 #include <QTextBrowser>
 #include <QUrl>
 #include <QVBoxLayout>
 
 #include "backend/FlatpakBackend.h"
+#include "backend/FlathubMediaUtils.h"
 #include "backend/FlatpakRemoteCatalog.h"
 #include "backend/TrackedBuildClassifier.h"
 #include "models/Operation.h"
@@ -302,6 +305,9 @@ AppDetailsWidget::AppDetailsWidget(FlatpakBackend *backend, QWidget *parent)
 void AppDetailsWidget::cancelPendingLoads()
 {
     ++m_loadGeneration;
+    hideScreenshotOverlay();
+    m_screenshotFullPixmaps.clear();
+    m_screenshotSourceUrls.clear();
     if (m_network)
         m_network->clearAccessCache();
 }
@@ -534,6 +540,8 @@ void AppDetailsWidget::setApp(const AppInfo &info)
     }
 
     // Screenshots: show placeholder or load images from URLs
+    m_screenshotFullPixmaps.clear();
+    m_screenshotSourceUrls.clear();
     auto *box = qobject_cast<QHBoxLayout *>(m_screenshotsContainer->layout());
     while (box && box->count()) {
         QLayoutItem *item = box->takeAt(0);
@@ -552,13 +560,19 @@ void AppDetailsWidget::setApp(const AppInfo &info)
             auto *label = new QLabel(m_screenshotsContainer);
             label->setFixedSize(220, 140);
             label->setAlignment(Qt::AlignCenter);
-            label->setStyleSheet(QStringLiteral("border: 1px solid gray; border-radius: 4px; background: palette(base);"));
+            label->setStyleSheet(QStringLiteral(
+                    "border: 1px solid gray; border-radius: 4px; background: palette(base);"));
             label->setScaledContents(false);
+            label->setCursor(Qt::PointingHandCursor);
+            label->setText(tr("Loading…"));
+            label->installEventFilter(this);
             box->addWidget(label);
             const QString shotUrl = info.screenshotUrls.at(i);
+            m_screenshotSourceUrls.insert(label, shotUrl);
+            const QString fetchUrl = FlathubMediaUtils::thumbnailUrl(shotUrl);
             const quint64 generation = m_loadGeneration;
-            QNetworkRequest req = QNetworkRequest(QUrl(shotUrl));
-            req.setTransferTimeout(15'000);
+            QNetworkRequest req = QNetworkRequest(QUrl(fetchUrl));
+            NetworkAccessUtils::applyDefaultRequestSettings(req);
             QNetworkReply *reply = m_network->get(req);
             QPointer<QLabel> labelGuard(label);
             connect(reply, &QNetworkReply::finished, this, [reply, labelGuard, generation, shotUrl, this]() {
@@ -566,12 +580,20 @@ void AppDetailsWidget::setApp(const AppInfo &info)
                     reply->deleteLater();
                     return;
                 }
-                if (reply->error() == QNetworkReply::NoError && m_info.screenshotUrls.contains(shotUrl)) {
-                    QPixmap pm;
-                    if (pm.loadFromData(reply->readAll()))
-                        labelGuard->setPixmap(pm.scaled(220, 140, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                QString networkError;
+                const QByteArray body = NetworkAccessUtils::readReplyBody(reply, &networkError);
+                if (!networkError.isEmpty() || !m_info.screenshotUrls.contains(shotUrl)) {
+                    labelGuard->setText(tr("Failed"));
+                    return;
                 }
-                reply->deleteLater();
+                QPixmap pm;
+                if (pm.loadFromData(body)) {
+                    m_screenshotFullPixmaps.insert(labelGuard, pm);
+                    labelGuard->setText(QString());
+                    labelGuard->setPixmap(pm.scaled(220, 140, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                } else {
+                    labelGuard->setText(tr("Failed"));
+                }
             });
         }
     }
@@ -594,8 +616,137 @@ void AppDetailsWidget::onLaunchClicked()
 
 void AppDetailsWidget::onRemoveClicked()
 {
-    if (m_backend)
-        m_backend->uninstall(m_info.id);
+    if (!m_info.id.isEmpty())
+        emit removeRequested(m_info);
+}
+
+void AppDetailsWidget::showScreenshotOverlayForUrl(const QString &sourceUrl)
+{
+    const QString trimmed = sourceUrl.trimmed();
+    if (trimmed.isEmpty())
+        return;
+
+    if (!m_screenshotOverlay) {
+        m_screenshotOverlay = new QWidget(this);
+        m_screenshotOverlay->setObjectName(QStringLiteral("screenshotOverlay"));
+        m_screenshotOverlay->setStyleSheet(QStringLiteral(
+                "#screenshotOverlay { background: rgba(0, 0, 0, 0.88); }"));
+        m_screenshotOverlay->setFocusPolicy(Qt::StrongFocus);
+
+        auto *layout = new QVBoxLayout(m_screenshotOverlay);
+        layout->setContentsMargins(16, 16, 16, 16);
+        layout->setSpacing(8);
+
+        auto *topRow = new QHBoxLayout;
+        topRow->addStretch();
+        auto *closeButton = new QPushButton(QStringLiteral("×"), m_screenshotOverlay);
+        closeButton->setFixedSize(40, 40);
+        closeButton->setToolTip(tr("Close"));
+        closeButton->setStyleSheet(QStringLiteral(
+                "QPushButton {"
+                "  color: white;"
+                "  font-size: 22px;"
+                "  font-weight: bold;"
+                "  background: rgba(255,255,255,0.12);"
+                "  border: 1px solid rgba(255,255,255,0.25);"
+                "  border-radius: 20px;"
+                "}"));
+        connect(closeButton, &QPushButton::clicked, this, &AppDetailsWidget::hideScreenshotOverlay);
+        topRow->addWidget(closeButton);
+        layout->addLayout(topRow);
+
+        m_screenshotOverlayImage = new QLabel(m_screenshotOverlay);
+        m_screenshotOverlayImage->setAlignment(Qt::AlignCenter);
+        m_screenshotOverlayImage->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        m_screenshotOverlayImage->setStyleSheet(QStringLiteral("color: white;"));
+        layout->addWidget(m_screenshotOverlayImage, 1);
+
+        m_screenshotOverlay->installEventFilter(this);
+    }
+
+    const quint64 generation = ++m_screenshotOverlayGeneration;
+    m_screenshotOverlayImage->setPixmap(QPixmap());
+    m_screenshotOverlayImage->setText(tr("Loading…"));
+    m_screenshotOverlay->setGeometry(rect());
+    m_screenshotOverlay->raise();
+    m_screenshotOverlay->show();
+    m_screenshotOverlay->setFocus();
+
+    for (auto it = m_screenshotSourceUrls.cbegin(); it != m_screenshotSourceUrls.cend(); ++it) {
+        if (it.value() != trimmed)
+            continue;
+        const QPixmap cached = m_screenshotFullPixmaps.value(it.key());
+        if (!cached.isNull()) {
+            const QPixmap scaled = cached.scaled(size() * 0.92, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            m_screenshotOverlayImage->setPixmap(scaled);
+            m_screenshotOverlayImage->setText(QString());
+            break;
+        }
+    }
+
+    const QString fetchUrl = FlathubMediaUtils::detailUrl(trimmed);
+    QNetworkRequest req = QNetworkRequest(QUrl(fetchUrl));
+    NetworkAccessUtils::applyDefaultRequestSettings(req);
+    QNetworkReply *reply = m_network->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation, trimmed]() {
+        if (generation != m_screenshotOverlayGeneration) {
+            reply->deleteLater();
+            return;
+        }
+        QString networkError;
+        const QByteArray body = NetworkAccessUtils::readReplyBody(reply, &networkError);
+        if (!networkError.isEmpty() || !m_screenshotOverlay || !m_screenshotOverlayImage)
+            return;
+        QPixmap pm;
+        if (!pm.loadFromData(body))
+            return;
+        const QPixmap scaled = pm.scaled(size() * 0.92, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        m_screenshotOverlayImage->setPixmap(scaled);
+        m_screenshotOverlayImage->setText(QString());
+    });
+}
+
+void AppDetailsWidget::hideScreenshotOverlay()
+{
+    ++m_screenshotOverlayGeneration;
+    if (m_screenshotOverlay)
+        m_screenshotOverlay->hide();
+}
+
+bool AppDetailsWidget::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_screenshotSourceUrls.contains(qobject_cast<QLabel *>(watched))
+            && event->type() == QEvent::MouseButtonRelease) {
+        auto *mouseEvent = static_cast<QMouseEvent *>(event);
+        if (mouseEvent->button() == Qt::LeftButton) {
+            const QString sourceUrl = m_screenshotSourceUrls.value(qobject_cast<QLabel *>(watched));
+            showScreenshotOverlayForUrl(sourceUrl);
+            return true;
+        }
+    }
+
+    if (watched == m_screenshotOverlay && event->type() == QEvent::MouseButtonRelease) {
+        auto *mouseEvent = static_cast<QMouseEvent *>(event);
+        if (mouseEvent->button() == Qt::LeftButton) {
+            const QWidget *child = m_screenshotOverlay->childAt(mouseEvent->pos());
+            if (!child) {
+                hideScreenshotOverlay();
+                return true;
+            }
+        }
+    }
+
+    return QWidget::eventFilter(watched, event);
+}
+
+void AppDetailsWidget::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Escape && m_screenshotOverlay && m_screenshotOverlay->isVisible()) {
+        hideScreenshotOverlay();
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
 }
 
 void AppDetailsWidget::onUpdateClicked()
@@ -660,6 +811,8 @@ void AppDetailsWidget::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
     layoutInstallProgress();
+    if (m_screenshotOverlay && m_screenshotOverlay->isVisible())
+        m_screenshotOverlay->setGeometry(rect());
 }
 
 void AppDetailsWidget::updateButtonStates()

@@ -649,6 +649,7 @@ void MainWindow::setupUi()
         onTopTabChanged(m_topSectionIndex);
     });
     connect(m_detailsWidget, &AppDetailsWidget::installRequested, this, &MainWindow::installStoreApp);
+    connect(m_detailsWidget, &AppDetailsWidget::removeRequested, this, &MainWindow::onDetailsRemoveRequested);
     m_stack->addWidget(m_detailsWidget);
 
     // Page 2: settings
@@ -758,6 +759,13 @@ void MainWindow::setupUi()
         trackedPage);
     trackedHelp->setWordWrap(true);
     trackedHelp->setStyleSheet(QStringLiteral("color: gray;"));
+    auto *trackedRateNote = new QLabel(
+        tr("Release checks use each host’s API. A few tracked apps usually work without any "
+           "extra setup. If you track many GitHub repositories and see rate-limit messages, "
+           "add an optional token below."),
+        trackedPage);
+    trackedRateNote->setWordWrap(true);
+    trackedRateNote->setStyleSheet(QStringLiteral("color: gray;"));
     m_trackedBuildsList = new QListWidget(trackedPage);
     m_trackedBuildsList->setMinimumHeight(160);
     auto *trackedButtonsLayout = new QHBoxLayout;
@@ -777,7 +785,7 @@ void MainWindow::setupUi()
     m_trackedStatusLabel->setStyleSheet(QStringLiteral("color: gray;"));
 
     auto *patTitle = new QLabel(
-            tr("API tokens (recommended for GitHub — avoids rate limits; optional for private repos)"),
+            tr("Advanced — API tokens (optional)"),
             trackedPage);
     patTitle->setFont(sectionTitleFont);
     m_githubPatEdit = new QLineEdit(trackedPage);
@@ -798,6 +806,7 @@ void MainWindow::setupUi()
 
     trackedPageLayout->addWidget(trackedTitle);
     trackedPageLayout->addWidget(trackedHelp);
+    trackedPageLayout->addWidget(trackedRateNote);
     trackedPageLayout->addWidget(m_trackedBuildsList);
     trackedPageLayout->addLayout(trackedButtonsLayout);
     trackedPageLayout->addWidget(m_trackedStatusLabel);
@@ -2430,11 +2439,60 @@ void MainWindow::installStoreApp(const AppInfo &info)
     m_backend->install(app.id, app.repoId);
 }
 
+void MainWindow::requestUninstall(const QString &appId, const QString &displayName)
+{
+    const QString trimmedId = appId.trimmed();
+    if (trimmedId.isEmpty() || !m_backend)
+        return;
+
+    const QString label = displayName.trimmed().isEmpty() ? trimmedId : displayName.trimmed();
+
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(tr("Uninstall"));
+    box.setText(tr("Uninstall %1?").arg(label));
+    box.setInformativeText(
+            tr("Saved data (settings and files under ~/.var/app/%1) can be removed as well.")
+                    .arg(trimmedId));
+    QPushButton *deleteDataButton =
+            box.addButton(tr("Delete data and uninstall"), QMessageBox::DestructiveRole);
+    QPushButton *uninstallOnlyButton = box.addButton(tr("Uninstall only"), QMessageBox::AcceptRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(uninstallOnlyButton);
+    box.exec();
+
+    if (box.clickedButton() == uninstallOnlyButton) {
+        if (InstalledRowWidget *row = m_installedRowsByAppId.value(trimmedId))
+            row->setUninstallInProgress(true);
+        m_backend->uninstall(trimmedId, false);
+        return;
+    }
+    if (box.clickedButton() == deleteDataButton) {
+        if (InstalledRowWidget *row = m_installedRowsByAppId.value(trimmedId))
+            row->setUninstallInProgress(true);
+        m_backend->uninstall(trimmedId, true);
+    }
+}
+
 void MainWindow::onInstalledUninstallRequested(const QString &appId)
 {
-    if (InstalledRowWidget *row = m_installedRowsByAppId.value(appId))
-        row->setUninstallInProgress(true);
-    m_backend->uninstall(appId);
+    QString displayName = appId;
+    if (m_installedModel) {
+        for (int i = 0; i < m_installedModel->rowCount(); ++i) {
+            const AppInfo app = m_installedModel->appAt(i);
+            if (app.id == appId) {
+                displayName = app.name.isEmpty() ? app.id : app.name;
+                break;
+            }
+        }
+    }
+    requestUninstall(appId, displayName);
+}
+
+void MainWindow::onDetailsRemoveRequested(const AppInfo &app)
+{
+    const QString displayName = app.name.isEmpty() ? app.id : app.name;
+    requestUninstall(app.id, displayName);
 }
 
 void MainWindow::onCheckForUpdatesTriggered()
@@ -3273,9 +3331,9 @@ void MainWindow::refreshRuntimeUpdatesRow()
 {
     if (!m_runtimeUpdatesRow || !m_backend)
         return;
-    const int count = m_backend->runtimeUpdateCount();
-    m_runtimeUpdatesRow->setVisible(count > 0);
-    m_runtimeUpdatesRow->setRuntimeUpdateCount(count);
+    const QVector<AppInfo> updates = m_backend->runtimeUpdates();
+    m_runtimeUpdatesRow->setVisible(!updates.isEmpty());
+    m_runtimeUpdatesRow->setRuntimeUpdates(updates);
     const bool runtimePhase = m_updateAllActive && m_updateAllQueue.isEmpty()
             && (!m_runtimeUpdateQueue.isEmpty() || !m_runtimeUpdateCurrentRef.isEmpty());
     m_runtimeUpdatesRow->setUpdateInProgress(runtimePhase);

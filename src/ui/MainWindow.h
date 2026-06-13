@@ -61,6 +61,7 @@ private slots:
     void presentAppDetailsPage(const AppInfo &info);
     void installStoreApp(const AppInfo &info);
     void onInstalledUninstallRequested(const QString &appId);
+    void onDetailsRemoveRequested(const AppInfo &app);
     void onCheckForUpdatesTriggered();
     void onUpdateAllTriggered();
     void startNextQueuedUpdate();
@@ -155,6 +156,7 @@ private:
     void beginTrackedInstallFeedback(const QString &appId, const QString &releaseTag);
     QVector<AppInfo> installedAppsSnapshot() const;
     void configureInstalledRowSource(InstalledRowWidget *row, const AppInfo &app);
+    void requestUninstall(const QString &appId, const QString &displayName);
     void refreshInstalledRowTrackedUpdate(InstalledRowWidget *row, const AppInfo &app);
     void patchInstalledTrackedBuildMetadata();
     void patchInstalledAppsMetadata(const QVector<AppInfo> &patches);

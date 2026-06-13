@@ -1,5 +1,6 @@
 #include "AppStreamProvider.h"
 #include "AppDisplayNames.h"
+#include "FlathubMediaUtils.h"
 
 #include <QDebug>
 #include <QDir>
@@ -35,22 +36,6 @@ struct AppStreamProvider::PoolHolder {
 };
 
 namespace {
-QString proxyFlathubScreenshotUrl(const QUrl &url)
-{
-    const QString raw = url.toString();
-    QString source = raw;
-    if (raw.startsWith(QStringLiteral("https://dl.flathub.org/repo/screenshots/"))) {
-        source = QStringLiteral("https://dl.flathub.org/media/")
-                 + raw.mid(QStringLiteral("https://dl.flathub.org/repo/screenshots/").size());
-    } else if (!raw.startsWith(QStringLiteral("https://dl.flathub.org/"))) {
-        return raw;
-    }
-
-    QByteArray encoded = source.toUtf8().toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
-    return QStringLiteral("https://imgproxy.flathub.org/insecure/q:90/f:avif/%1")
-            .arg(QString::fromUtf8(encoded));
-}
-
 #ifdef HAVE_APPSTREAM_QT
 int scoreIconCandidate(const AppStream::Icon &icon)
 {
@@ -224,7 +209,7 @@ void AppStreamProvider::enrichFromAppStreamPool(AppInfo &info) const
             }
 
             if (!candidate.isEmpty()) {
-                const QString normalizedUrl = proxyFlathubScreenshotUrl(candidate);
+                const QString normalizedUrl = FlathubMediaUtils::proxyFlathubScreenshotUrl(candidate);
                 const QString key = QUrl(normalizedUrl).toString(QUrl::RemoveQuery | QUrl::RemoveFragment);
                 if (!seenUrls.contains(key)) {
                     seenUrls.insert(key);
@@ -411,7 +396,7 @@ void AppStreamProvider::enrichFromInstalledMetainfo(AppInfo &info) const
             } else if (xml.name() == QLatin1String("image") && info.screenshotUrls.isEmpty()) {
                 const QString imageUrl = xml.readElementText().trimmed();
                 if (!imageUrl.isEmpty()) {
-                    const QString normalized = proxyFlathubScreenshotUrl(QUrl(imageUrl));
+                    const QString normalized = FlathubMediaUtils::proxyFlathubScreenshotUrl(QUrl(imageUrl));
                     const QString key = QUrl(normalized).toString(QUrl::RemoveQuery | QUrl::RemoveFragment);
                     if (!seenScreenshots.contains(key)) {
                         seenScreenshots.insert(key);

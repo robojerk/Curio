@@ -73,7 +73,7 @@ public:
     void installReleaseAsset(const QString &assetUrl);
 
     QNetworkAccessManager *networkAccessManager() const { return m_networkManager; }
-    void uninstall(const QString &appId);
+    void uninstall(const QString &appId, bool deleteUserData = false);
     void launchApp(const QString &appId);
     void update(const QString &appId, const QString &installedVersion = QString());
     void updateInstalledFlatpakRef(const QString &flatpakRef, FlatpakScope scope);
@@ -151,6 +151,7 @@ private:
                                   const TrackedBuildProject &project,
                                   QString *error) const;
     void cleanupTrackedBuildTempDir(const QString &dirPath) const;
+    bool deleteAppUserData(const QString &appId, QString *errorOut = nullptr) const;
     void runFlatpakInstallForOperation(const Operation &op,
                                        const QString &bundlePath,
                                        const QString &tempDirToCleanup);
@@ -232,6 +233,7 @@ private:
         QString assetUrl;
     };
     QHash<QString, PendingTrackedInstall> m_pendingTrackedInstalls;
+    QSet<QString> m_uninstallDeleteUserData;
     QTimer *m_storeIconEnrichTimer = nullptr;
     QTimer *m_storeIconEnrichDeferTimer = nullptr;
     QString m_storeIconEnrichRepoId;

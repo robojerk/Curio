@@ -64,6 +64,7 @@ set(SOURCES
     ${SRC_DIR}/backend/FlatpakRemoteCatalog.cpp
     ${SRC_DIR}/backend/AppDisplayNames.cpp
     ${SRC_DIR}/backend/NetworkAccessUtils.cpp
+    ${SRC_DIR}/backend/FlathubMediaUtils.cpp
     ${SRC_DIR}/backend/FlathubApiClient.cpp
     ${SRC_DIR}/backend/AppStreamProvider.cpp
     ${SRC_DIR}/backend/GitHost.cpp
@@ -97,6 +98,7 @@ set(HEADERS
     ${SRC_DIR}/backend/FlatpakTransactionRunner.h
     ${SRC_DIR}/backend/FlatpakRemoteCatalog.h
     ${SRC_DIR}/backend/NetworkAccessUtils.h
+    ${SRC_DIR}/backend/FlathubMediaUtils.h
     ${SRC_DIR}/backend/FlathubApiClient.h
     ${SRC_DIR}/backend/AppStreamProvider.h
     ${SRC_DIR}/backend/GitHost.h
