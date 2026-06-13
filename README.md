@@ -6,12 +6,6 @@ This project is inspired by Bazaar, but it is a separate Qt application. It also
 
 It's an experiment.
 
-**[Download v0.1.8](https://github.com/robojerk/Curio/releases/tag/v0.1.8)** — pre-built Flatpak bundle (x86_64).
-
-```bash
-flatpak install --system io.github.curio.Curio-x86_64.flatpak
-```
-
 ## What it does
 
 Curio talks to Flatpak through **libflatpak** (not the `flatpak` CLI). Browse Flathub, search remotes, install and uninstall apps, and see what you already have installed.
