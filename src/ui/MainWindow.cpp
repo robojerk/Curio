@@ -50,6 +50,7 @@
 #include "ui/RuntimeUpdatesRowWidget.h"
 
 #include "backend/FlatpakScope.h"
+#include <algorithm>
 
 namespace {
 
@@ -85,7 +86,7 @@ int exploreAvailableWidth(QWidget *container, const QGridLayout *grid)
     if (!container || !grid)
         return 0;
     const int margins = grid->contentsMargins().left() + grid->contentsMargins().right();
-    return qMax(0, exploreViewportWidth(container) - margins);
+    return (std::max)(0, exploreViewportWidth(container) - margins);
 }
 
 int exploreGridPixelWidth(int columnCount, int spacing)
@@ -100,7 +101,7 @@ int exploreColumnCount(int availableWidth, int spacing)
     const int minCardWidth = AppCardWidget::PreferredWidth;
     if (availableWidth <= 0)
         return 1;
-    return qMax(1, (availableWidth + spacing) / (minCardWidth + spacing));
+    return (std::max)(1, (availableWidth + spacing) / (minCardWidth + spacing));
 }
 
 void startupTrace(const char *step)
@@ -1118,7 +1119,7 @@ void MainWindow::connectBackend()
                         ? tr("Check your internet connection and try again.")
                         : tr("Open Settings (Ctrl+,) and go to Remotes to add or fix '%1'.")
                                   .arg(repoId);
-                m_storeStatusLabel->setText(QStringLiteral("%1\n%2").arg(message, guidance));
+                m_storeStatusLabel->setText(QStringLiteral("%1\n%2").arg(message).arg(guidance));
                 m_storeStatusLabel->setVisible(true);
                 const bool hasCachedFeed = !m_storeTrending.isEmpty() || !m_storePopular.isEmpty()
                         || !m_storeRecent.isEmpty() || !m_storeUpdated.isEmpty();
@@ -1173,14 +1174,14 @@ void MainWindow::connectBackend()
             });
 
     connect(m_backend, &FlatpakBackend::remotesUpdated,
-            this, [this](const QVector<QPair<QString, QString>> &remotes) {
+            this, [this](const QVector<std::pair<QString, QString>> &remotes) {
                 if (!m_remotesList || !m_remoteStatusLabel)
                     return;
                 m_remotesList->clear();
                 for (const auto &remote : remotes) {
                     const QString line = remote.second.isEmpty()
                             ? remote.first
-                            : QStringLiteral("%1  -  %2").arg(remote.first, remote.second);
+                            : QStringLiteral("%1  -  %2").arg(remote.first).arg(remote.second);
                     auto *item = new QListWidgetItem(line, m_remotesList);
                     item->setData(Qt::UserRole, remote.first);
                     if (remote.first.compare(QStringLiteral("flathub"), Qt::CaseInsensitive) == 0) {
@@ -2719,41 +2720,41 @@ void MainWindow::updateFeaturedBannerLayout()
             : exploreViewportWidth(m_bannerHost);
     const int columns = exploreColumnCount(viewportW, spacing);
     int bannerW = exploreGridPixelWidth(columns, spacing);
-    bannerW = qBound(260, bannerW, kBannerMaxWidth);
-    const int bannerH = qBound(96, static_cast<int>(bannerW * 0.20), kBannerMaxHeight);
+    bannerW = std::clamp(bannerW, 260, kBannerMaxWidth);
+    const int bannerH = std::clamp(static_cast<int>(bannerW * 0.20), 96, kBannerMaxHeight);
 
     m_bannerWidget->setMaximumWidth(bannerW);
     m_bannerWidget->setMinimumWidth(bannerW);
     m_bannerWidget->setFixedHeight(bannerH);
 
     if (auto *bannerLayout = m_bannerWidget->layout()) {
-        const int hMargin = qBound(12, bannerH / 6, 28);
-        const int vMargin = qBound(10, bannerH / 7, 22);
+        const int hMargin = std::clamp(bannerH / 6, 12, 28);
+        const int vMargin = std::clamp(bannerH / 7, 10, 22);
         bannerLayout->setContentsMargins(hMargin, vMargin, hMargin, vMargin);
     }
 
-    const int arrowSize = qBound(28, bannerH / 4, 44);
+    const int arrowSize = std::clamp(bannerH / 4, 28, 44);
     if (m_bannerPrevButton)
         m_bannerPrevButton->setFixedSize(arrowSize, arrowSize);
     if (m_bannerNextButton)
         m_bannerNextButton->setFixedSize(arrowSize, arrowSize);
 
-    const int iconBox = qBound(64, static_cast<int>(bannerH * 0.72), 132);
-    m_bannerIconPixels = qBound(48, static_cast<int>(iconBox * 0.78), 100);
+    const int iconBox = std::clamp(static_cast<int>(bannerH * 0.72), 64, 132);
+    m_bannerIconPixels = std::clamp(static_cast<int>(iconBox * 0.78), 48, 100);
     if (m_bannerIconLabel) {
         m_bannerIconLabel->setFixedSize(iconBox, iconBox);
-        const int radius = qMax(8, iconBox / 8);
+        const int radius = (std::max)(8, iconBox / 8);
         m_bannerIconLabel->setStyleSheet(
                 QStringLiteral("background: rgba(0,0,0,0.08); border-radius: %1px;")
                         .arg(radius));
     }
 
-    const int titlePx = qBound(18, bannerH / 5, 32);
+    const int titlePx = std::clamp(bannerH / 5, 18, 32);
     if (m_bannerTitleLabel) {
         m_bannerTitleLabel->setStyleSheet(
                 QStringLiteral("color: white; font-size: %1px; font-weight: 700;").arg(titlePx));
     }
-    const int eyebrowPx = qBound(11, titlePx - 4, 14);
+    const int eyebrowPx = std::clamp(titlePx - 4, 11, 14);
     if (m_bannerEyebrowLabel) {
         m_bannerEyebrowLabel->setStyleSheet(
                 QStringLiteral("color: rgba(255,255,255,0.85); font-weight: 600; font-size: %1px;")
@@ -2969,7 +2970,7 @@ QVector<StoreTemplate> MainWindow::allStoreTemplates() const
     return QVector<StoreTemplate>{flathub, fedora};
 }
 
-void MainWindow::updateStoreTemplatesForRemotes(const QVector<QPair<QString, QString>> &remotes)
+void MainWindow::updateStoreTemplatesForRemotes(const QVector<std::pair<QString, QString>> &remotes)
 {
     QSet<QString> remoteNames;
     for (const auto &remote : remotes) {
@@ -3039,14 +3040,14 @@ void MainWindow::applyActiveStoreTemplateUi()
         m_storeFeedTabs->blockSignals(true);
         const int oldCount = m_storeFeedTabs->count();
         const int currentIndex = oldCount > 0
-                ? qBound(0, m_storeFeedTabs->currentIndex(), oldCount - 1)
+                ? std::clamp(m_storeFeedTabs->currentIndex(), 0, oldCount - 1)
                 : 0;
         while (m_storeFeedTabs->count() > 0)
             m_storeFeedTabs->removeTab(0);
         for (const QString &label : m_activeStoreTemplate.feedLabels)
             m_storeFeedTabs->addTab(label);
         if (m_storeFeedTabs->count() > 0)
-            m_storeFeedTabs->setCurrentIndex(qMin(currentIndex, m_storeFeedTabs->count() - 1));
+            m_storeFeedTabs->setCurrentIndex((std::min)(currentIndex, m_storeFeedTabs->count() - 1));
         m_storeFeedTabs->blockSignals(false);
     }
 
@@ -3307,7 +3308,7 @@ MainWindow::TrackedUpdateSummary MainWindow::summarizeInstalledUpdates() const
 
         ++summary.trackedInstalledCount;
         if (!project.lastError.trimmed().isEmpty())
-            summary.errors.append(QStringLiteral("%1: %2").arg(project.repoSlug, project.lastError));
+            summary.errors.append(QStringLiteral("%1: %2").arg(project.repoSlug).arg(project.lastError));
 
         QString releaseTag;
         QString assetUrl;
@@ -3461,7 +3462,7 @@ void MainWindow::refreshTrackedBuildsList()
     int selectedRow = -1;
     for (int i = 0; i < m_trackedBuildProjects.size(); ++i) {
         const TrackedBuildProject &project = m_trackedBuildProjects.at(i);
-        QString label = QStringLiteral("%1/%2").arg(project.providerId, project.repoSlug);
+        QString label = QStringLiteral("%1/%2").arg(project.providerId).arg(project.repoSlug);
         if (project.isBuiltIn())
             label = QStringLiteral("🔒 ") + label;
         if (!project.latestStableVersion.isEmpty()) {

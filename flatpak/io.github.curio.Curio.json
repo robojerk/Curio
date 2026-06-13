@@ -10,10 +10,11 @@
     "--socket=x11",
     "--socket=wayland",
     "--device=dri",
-    "--filesystem=/var/lib/flatpak",
+    "--filesystem=/var/lib/flatpak:ro",
     "--filesystem=xdg-data/flatpak",
     "--talk-name=org.freedesktop.Flatpak",
-    "--system-talk-name=org.freedesktop.Flatpak.SystemHelper"
+    "--system-talk-name=org.freedesktop.Flatpak.SystemHelper",
+    "--system-talk-name=org.freedesktop.PolicyKit1"
   ],
   "cleanup": [
     "/include",

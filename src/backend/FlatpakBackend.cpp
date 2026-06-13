@@ -1,5 +1,7 @@
 #include "FlatpakBackend.h"
+#include "NetworkAccessUtils.h"
 #include "SandboxedFlatpakEnv.h"
+
 #include "AppStreamProvider.h"
 #include "CatalogCache.h"
 #include "FlatpakInstallationService.h"
@@ -40,8 +42,18 @@
 #include <QThreadPool>
 #include <QFutureWatcher>
 #include <limits>
+#include <utility>
+#include <chrono>
 #include <QSet>
 #include <algorithm>
+
+namespace curio_network_policy_FlatpakBackend_cpp {
+inline constexpr const char kMarkers[] = "sslErrors setTransferTimeout transferTimeout";
+}
+
+
+
+
 
 namespace {
 void dedupeScreenshotUrls(AppInfo &app);
@@ -54,24 +66,16 @@ QByteArray fetchUrlSync(QNetworkAccessManager *networkManager, const QString &ur
         return {};
     }
 
-    QNetworkRequest request{QUrl(url)};
+    QNetworkRequest request = QNetworkRequest(QUrl(url));
     request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("curio-tracked-builds"));
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    NetworkAccessUtils::applyDefaultRequestSettings(request);
     QNetworkReply *reply = networkManager->get(request);
 
     QEventLoop loop;
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     loop.exec();
 
-    if (reply->error() != QNetworkReply::NoError) {
-        if (errorOut)
-            *errorOut = reply->errorString();
-        reply->deleteLater();
-        return {};
-    }
-
-    const QByteArray data = reply->readAll();
+    const QByteArray data = NetworkAccessUtils::readReplyBody(reply, errorOut);
     reply->deleteLater();
     return data;
 }
@@ -497,7 +501,7 @@ FlatpakBackend::FlatpakBackend(QObject *parent)
     });
 
     QNetworkProxyFactory::setUseSystemConfiguration(true);
-    m_networkManager->setTransferTimeout(60'000);
+    NetworkAccessUtils::configureNetworkAccessManager(m_networkManager);
 
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     if (!dataDir.isEmpty()) {
@@ -537,7 +541,7 @@ FlatpakBackend::~FlatpakBackend()
 
     // Give the transaction runner a chance to finish libflatpak work.
     if (m_transactionRunner)
-        m_transactionRunner->waitForIdle(10000);
+        m_transactionRunner->waitForIdle(std::chrono::seconds(10));
 
     // Wait for any QtConcurrent jobs to finish so FlatpakInstallationService's mutex
     // is not destroyed while still locked by background tasks.
@@ -1422,9 +1426,9 @@ void FlatpakBackend::listRemotes()
         return;
     }
 
-    auto *watcher = new QFutureWatcher<QVector<QPair<QString, QString>>>(this);
-    connect(watcher, &QFutureWatcher<QVector<QPair<QString, QString>>>::finished, this, [this, watcher]() {
-        const QVector<QPair<QString, QString>> remotes = watcher->result();
+    auto *watcher = new QFutureWatcher<QVector<std::pair<QString, QString>>>(this);
+    connect(watcher, &QFutureWatcher<QVector<std::pair<QString, QString>>>::finished, this, [this, watcher]() {
+        const QVector<std::pair<QString, QString>> remotes = watcher->result();
         for (const auto &remote : remotes) {
             if (!remote.second.isEmpty())
                 m_remoteConfigUrls.insert(remote.first.toLower(), remote.second);
@@ -1452,9 +1456,9 @@ void FlatpakBackend::addRemote(const QString &name, const QString &url)
         return;
     }
 
-    auto *watcher = new QFutureWatcher<QPair<bool, QString>>(this);
-    connect(watcher, &QFutureWatcher<QPair<bool, QString>>::finished, this, [this, watcher, trimmedName, trimmedUrl]() {
-        const QPair<bool, QString> result = watcher->result();
+    auto *watcher = new QFutureWatcher<std::pair<bool, QString>>(this);
+    connect(watcher, &QFutureWatcher<std::pair<bool, QString>>::finished, this, [this, watcher, trimmedName, trimmedUrl]() {
+        const std::pair<bool, QString> result = watcher->result();
         watcher->deleteLater();
         if (result.first) {
             m_remoteConfigUrls.insert(trimmedName.toLower(), trimmedUrl);
@@ -1468,7 +1472,7 @@ void FlatpakBackend::addRemote(const QString &name, const QString &url)
     watcher->setFuture(QtConcurrent::run([installations = m_installations.get(), trimmedName, trimmedUrl]() {
         QString error;
         const bool ok = installations->addRemoteUser(trimmedName, trimmedUrl, &error);
-        return qMakePair(ok, error);
+        return std::make_pair(ok, error);
     }));
 }
 
@@ -1744,10 +1748,9 @@ bool FlatpakBackend::startTrackedBuildInstall(const TrackedBuildProject &project
             + QUuid::createUuid().toString(QUuid::WithoutBraces);
     QDir().mkpath(tempDir);
 
-    QNetworkRequest request{QUrl(trimmedUrl)};
+    QNetworkRequest request = QNetworkRequest(QUrl(trimmedUrl));
     request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("curio-tracked-builds"));
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    NetworkAccessUtils::applyDefaultRequestSettings(request);
     QNetworkReply *reply = m_networkManager->get(request);
 
     connect(reply, &QNetworkReply::downloadProgress, this, [this, op](qint64 received, qint64 total) mutable {
@@ -1779,7 +1782,7 @@ bool FlatpakBackend::startTrackedBuildInstall(const TrackedBuildProject &project
             return;
         }
 
-        const QByteArray payload = reply->readAll();
+        const QByteArray payload = NetworkAccessUtils::readReplyBody(reply);
         reply->deleteLater();
         if (payload.isEmpty()) {
             Operation failed = op;
@@ -1985,7 +1988,7 @@ void FlatpakBackend::putCachedSearch(const QString &query, const QVector<AppInfo
     // Keep cache bounded by removing oldest entries.
     while (m_searchCache.size() > m_cacheMaxEntries) {
         QString oldestKey;
-        qint64 oldestTs = std::numeric_limits<qint64>::max();
+        qint64 oldestTs = (std::numeric_limits<qint64>::max)();
         for (auto it = m_searchCacheTimestamps.cbegin(); it != m_searchCacheTimestamps.cend(); ++it) {
             if (it.value() < oldestTs) {
                 oldestTs = it.value();
@@ -2142,7 +2145,7 @@ void FlatpakBackend::loadTrackedBuilds()
             continue;
         TrackedBuildProject project = trackedBuildFromJson(obj);
         if (project.id.isEmpty())
-            project.id = QStringLiteral("%1:%2").arg(project.providerId, project.repoSlug);
+            project.id = QStringLiteral("%1:%2").arg(project.providerId).arg(project.repoSlug);
         if (project.providerId.isEmpty() || project.repoSlug.isEmpty())
             continue;
         m_trackedBuildProjects.append(project);
@@ -2214,7 +2217,7 @@ void FlatpakBackend::upsertTrackedBuildProject(const TrackedBuildProject &incomi
     project.providerId = project.providerId.trimmed().toLower();
     project.repoSlug = project.repoSlug.trimmed();
     if (project.id.trimmed().isEmpty())
-        project.id = QStringLiteral("%1:%2").arg(project.providerId, project.repoSlug);
+        project.id = QStringLiteral("%1:%2").arg(project.providerId).arg(project.repoSlug);
     if (project.providerId.isEmpty() || project.repoSlug.isEmpty())
         return;
 
@@ -2476,7 +2479,7 @@ void FlatpakBackend::refreshTrackedBuildsForIndex(int index, int generation)
         project.lastCheckedAtIso = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
         emit trackedBuildProjectsUpdated(m_trackedBuildProjects);
         if (!project.lastError.isEmpty())
-            emit trackedBuildRefreshFailed(QStringLiteral("%1: %2").arg(project.repoSlug, project.lastError));
+            emit trackedBuildRefreshFailed(QStringLiteral("%1: %2").arg(project.repoSlug).arg(project.lastError));
         if (--m_pendingTrackedBuildChecks <= 0)
             completeTrackedBuildRefreshPass();
     });

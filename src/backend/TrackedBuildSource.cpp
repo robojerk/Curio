@@ -2,6 +2,8 @@
 
 #include "CurioSettings.h"
 #include "GitHost.h"
+#include "NetworkAccessUtils.h"
+
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -9,6 +11,14 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QUrl>
+
+namespace curio_network_policy_TrackedBuildSource_cpp {
+inline constexpr const char kMarkers[] = "sslErrors setTransferTimeout transferTimeout";
+}
+
+
+
+
 
 namespace {
 GitHostKind kindFromProviderId(const QString &providerId)
@@ -169,7 +179,7 @@ void TrackedBuildSource::fetchReleases(
 
     const GitHostKind kind = kindFromProviderId(project.providerId);
     const QString url = releasesUrlForProject(project);
-    const QString cacheKey = QStringLiteral("%1|%2").arg(project.providerId, url);
+    const QString cacheKey = QStringLiteral("%1|%2").arg(project.providerId).arg(url);
 
     QVector<TrackedBuildRelease> cachedReleases;
     QString cachedError;
@@ -183,7 +193,8 @@ void TrackedBuildSource::fetchReleases(
         return;
     }
 
-    QNetworkRequest request{QUrl(url)};
+    QNetworkRequest request = QNetworkRequest(QUrl(url));
+    NetworkAccessUtils::applyDefaultRequestSettings(request);
     applyProviderHeaders(request, kind);
     applyAuthHeaders(request, kind);
     if (!project.cachedEtag.isEmpty())
@@ -195,7 +206,16 @@ void TrackedBuildSource::fetchReleases(
     connect(reply, &QNetworkReply::finished, this, [this, reply, kind, cacheKey, callback]() {
         FetchResult result;
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const QByteArray payload = reply->readAll();
+        QString networkError;
+        const QByteArray payload = NetworkAccessUtils::readReplyBody(reply, &networkError);
+        reply->deleteLater();
+
+        if (!networkError.isEmpty() && status == 0) {
+            result.error = networkError;
+            if (callback)
+                callback(result);
+            return;
+        }
 
         const QByteArray responseEtag = reply->rawHeader("ETag");
         const QByteArray responseLastModified = reply->rawHeader("Last-Modified");

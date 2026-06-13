@@ -81,7 +81,7 @@ void AppItemDelegate::paint(QPainter *painter,
     QRect nameRect = textRect;
     nameRect.setBottom(nameRect.top() + opt.fontMetrics.height() + 2);
     painter->drawText(nameRect, Qt::AlignLeft | Qt::AlignVCenter,
-                      version.isEmpty() ? name : QStringLiteral("%1  %2").arg(name, version));
+                      version.isEmpty() ? name : QStringLiteral("%1  %2").arg(name).arg(version));
 
     // Summary line
     QFont summaryFont = opt.font;

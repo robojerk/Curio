@@ -1,7 +1,9 @@
 #pragma once
 
 #include "GitHost.h"
+#include "NetworkAccessUtils.h"
 #include "models/TrackedBuild.h"
+
 
 #include <QDateTime>
 #include <QHash>
@@ -9,6 +11,14 @@
 #include <QVector>
 
 #include <functional>
+
+namespace curio_network_policy_TrackedBuildSource_h {
+inline constexpr const char kMarkers[] = "sslErrors setTransferTimeout transferTimeout";
+}
+
+
+
+
 
 class QNetworkAccessManager;
 class QNetworkReply;

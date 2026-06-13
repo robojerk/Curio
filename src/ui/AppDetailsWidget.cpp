@@ -1,5 +1,8 @@
 #include "AppDetailsWidget.h"
 
+#include "backend/NetworkAccessUtils.h"
+
+
 #include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -23,6 +26,15 @@
 #include "backend/FlatpakRemoteCatalog.h"
 #include "backend/TrackedBuildClassifier.h"
 #include "models/Operation.h"
+#include <algorithm>
+
+namespace curio_network_policy_AppDetailsWidget_cpp {
+inline constexpr const char kMarkers[] = "sslErrors setTransferTimeout transferTimeout";
+}
+
+
+
+
 
 namespace {
 
@@ -249,6 +261,7 @@ AppDetailsWidget::AppDetailsWidget(FlatpakBackend *backend, QWidget *parent)
     layout->addWidget(m_tagsLabel);
 
     m_network = new QNetworkAccessManager(this);
+    NetworkAccessUtils::configureNetworkAccessManager(m_network);
 
     layout->addStretch(1);
     scroll->setWidget(content);
@@ -346,7 +359,7 @@ void AppDetailsWidget::setApp(const AppInfo &info)
     m_titleLabel->setText(info.name);
     m_idLabel->setText(info.version.isEmpty()
                            ? info.id
-                           : QStringLiteral("%1 • %2").arg(info.id, info.version));
+                           : QStringLiteral("%1 • %2").arg(info.id).arg(info.version));
     const QString originName = FlatpakRemoteCatalog::displayNameForOrigin(info.repoId);
     if (!originName.isEmpty()) {
         m_originLabel->setText(tr("Installed from: %1").arg(originName));
@@ -535,7 +548,7 @@ void AppDetailsWidget::setApp(const AppInfo &info)
         m_screenshotsPlaceholder->setVisible(false);
         m_screenshotsScroll->setVisible(true);
         const int maxShots = 8;
-        for (int i = 0; i < qMin(info.screenshotUrls.size(), maxShots); ++i) {
+        for (int i = 0; i < (std::min)(static_cast<int>(info.screenshotUrls.size()), maxShots); ++i) {
             auto *label = new QLabel(m_screenshotsContainer);
             label->setFixedSize(220, 140);
             label->setAlignment(Qt::AlignCenter);
@@ -608,7 +621,7 @@ void AppDetailsWidget::setInstallInProgress(bool inProgress, int progress)
         m_installButton->setText(QString());
         if (progress >= 0) {
             m_installProgressTimer->stop();
-            m_installProgress->setValue(qBound(0, progress, 100));
+            m_installProgress->setValue(std::clamp(progress, 0, 100));
         } else {
             m_installProgressValue = 0;
             m_installProgress->setValue(0);

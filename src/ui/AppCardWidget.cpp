@@ -1,5 +1,8 @@
 #include "AppCardWidget.h"
 
+#include "backend/NetworkAccessUtils.h"
+
+
 #include <QFontMetrics>
 #include <QIcon>
 #include <QMouseEvent>
@@ -14,6 +17,15 @@
 
 #include <QLabel>
 #include <QPushButton>
+#include <algorithm>
+
+namespace curio_network_policy_AppCardWidget_cpp {
+inline constexpr const char kMarkers[] = "sslErrors setTransferTimeout transferTimeout";
+}
+
+
+
+
 
 namespace {
 
@@ -21,7 +33,7 @@ QNetworkAccessManager *sharedIconNetwork()
 {
     static QNetworkAccessManager *nam = []() {
         auto *manager = new QNetworkAccessManager(qApp);
-        manager->setTransferTimeout(15'000);
+        NetworkAccessUtils::configureNetworkAccessManager(manager, 15'000);
         return manager;
     }();
     return nam;
@@ -223,7 +235,7 @@ void AppCardWidget::setApp(const AppInfo &info, bool refreshIconNow)
     QFontMetrics nameFm(m_nameLabel->font());
     QFontMetrics summaryFm(m_summaryLabel->font());
     QFontMetrics metaFm(m_metaLabel ? m_metaLabel->font() : m_nameLabel->font());
-    const int textWidth = qMax(120, width() - 56 - 32 - 96);
+    const int textWidth = (std::max)(120, width() - 56 - 32 - 96);
     m_nameLabel->setText(nameFm.elidedText(cleanName, Qt::ElideRight, textWidth));
     m_nameLabel->setToolTip(cleanName);
     m_summaryLabel->setText(cleanSummary);
@@ -268,7 +280,7 @@ void AppCardWidget::setInstallInProgress(bool inProgress, int progress)
         m_installButton->setText(QString());
         if (progress >= 0) {
             m_installProgressTimer->stop();
-            m_installProgress->setValue(qBound(0, progress, 100));
+            m_installProgress->setValue(std::clamp(progress, 0, 100));
         } else {
             m_installProgressValue = 0;
             m_installProgress->setValue(0);

@@ -7,6 +7,11 @@
 #include <QObject>
 #include <functional>
 
+#include <atomic>
+#include <chrono>
+
+struct _FlatpakInstallation;
+typedef struct _FlatpakInstallation FlatpakInstallation;
 struct _FlatpakTransaction;
 typedef struct _FlatpakTransaction FlatpakTransaction;
 struct _GError;
@@ -45,6 +50,10 @@ private:
                         const std::function<bool(FlatpakTransaction *, GError **)> &buildTransaction,
                         TransactionContext context);
 
+    void executeTransaction(FlatpakInstallation *installation,
+                            const std::function<bool(FlatpakTransaction *, GError **)> &buildTransaction,
+                            TransactionContext context);
+
     static QString friendlyError(GError *error);
     static void connectProgressHandlers(FlatpakTransaction *transaction,
                                         FlatpakTransactionRunner *runner,
@@ -52,8 +61,8 @@ private:
                                         void **bridgeOut);
 
     FlatpakInstallationService *m_installations = nullptr;
-    QAtomicInt m_activeTransactions{0};
+    std::atomic<int> m_activeTransactions = 0;
 public:
-    /** Block until active transactions reach zero or timeout (ms). */
-    void waitForIdle(int timeoutMs = 5000);
+    /** Block until active transactions reach zero or timeout elapses. */
+    void waitForIdle(std::chrono::milliseconds timeout = std::chrono::seconds(5));
 };

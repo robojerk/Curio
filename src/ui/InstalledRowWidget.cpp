@@ -15,6 +15,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <algorithm>
 
 namespace {
 
@@ -276,7 +277,7 @@ void InstalledRowWidget::setUpdateInProgress(bool inProgress, const QString &sta
         m_updateButton->setText(QString());
         if (progress >= 0) {
             m_updateProgressTimer->stop();
-            m_updateProgress->setValue(qBound(0, progress, 100));
+            m_updateProgress->setValue(std::clamp(progress, 0, 100));
         } else {
             m_updateProgressValue = 0;
             m_updateProgress->setValue(0);

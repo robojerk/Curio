@@ -9,7 +9,7 @@ class OperationModel : public QAbstractListModel
 {
     Q_OBJECT
 public:
-    enum Roles {
+    enum Roles : int {
         AppIdRole = Qt::UserRole + 1,
         AppNameRole,
         TypeRole,

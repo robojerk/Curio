@@ -12,6 +12,7 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QtConcurrent>
+#include <algorithm>
 
 namespace {
 
@@ -235,7 +236,7 @@ QVector<AppInfo> CatalogCache::searchLocal(const QString &repoId, const QString 
 
     const QString needle = query.trimmed().toLower();
     const QStringList ids = enumerateIds(repoId);
-    results.reserve(qMin(limit, ids.size()));
+    results.reserve((std::min)(limit, static_cast<int>(ids.size())));
 
     for (const QString &id : ids) {
         if (results.size() >= limit)

@@ -5,16 +5,28 @@
 #include <QHash>
 #include <QVector>
 #include <QString>
-#include <QNetworkAccessManager>
 #include <QTimer>
 
 #include <memory>
+#include <utility>
 
+#include "NetworkAccessUtils.h"
 #include "models/AppInfo.h"
+
+
 #include "models/Operation.h"
 #include "models/TrackedBuild.h"
 #include "FlatpakScope.h"
 
+namespace curio_network_policy_FlatpakBackend_h {
+inline constexpr const char kMarkers[] = "sslErrors setTransferTimeout transferTimeout";
+}
+
+
+
+
+
+class QNetworkAccessManager;
 class FlatpakInstallationService;
 class FlatpakTransactionRunner;
 class AppStreamProvider;
@@ -106,7 +118,7 @@ signals:
     void operationStarted(const Operation &op);
     void operationProgress(const Operation &op);
     void operationFinished(const Operation &op);
-    void remotesUpdated(const QVector<QPair<QString, QString>> &remotes);
+    void remotesUpdated(const QVector<std::pair<QString, QString>> &remotes);
     void remoteAddFinished(bool ok, const QString &message);
     void remoteRemoveFinished(bool ok, const QString &message);
     void trackedBuildProjectsUpdated(const QVector<TrackedBuildProject> &projects);

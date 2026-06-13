@@ -6,8 +6,9 @@
 #include <QHash>
 #include <QStringList>
 #include <QRecursiveMutex>
-#include <QPair>
 #include <QVector>
+
+#include <utility>
 
 struct _FlatpakInstallation;
 typedef struct _FlatpakInstallation FlatpakInstallation;
@@ -32,7 +33,7 @@ public:
     QVector<AppInfo> listAvailableUpdates();
     /** Installed runtimes/SDKs with available updates (libflatpak update scan). */
     QVector<AppInfo> listAvailableRuntimeUpdates();
-    QVector<QPair<QString, QString>> listRemotes();
+    QVector<std::pair<QString, QString>> listRemotes();
     QVector<AppInfo> searchApps(const QString &query);
     QVector<AppInfo> listRemoteApps(const QString &remoteName);
 

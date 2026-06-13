@@ -6,6 +6,8 @@
 #include <QMainWindow>
 #include <QVector>
 
+#include <utility>
+
 #include "models/AppInfo.h"
 #include "models/Operation.h"
 #include "models/StoreTemplate.h"
@@ -111,7 +113,7 @@ private:
     void refreshStoreCategoriesPane();
     StoreTemplate defaultStoreTemplate() const;
     QVector<StoreTemplate> allStoreTemplates() const;
-    void updateStoreTemplatesForRemotes(const QVector<QPair<QString, QString>> &remotes);
+    void updateStoreTemplatesForRemotes(const QVector<std::pair<QString, QString>> &remotes);
     void rebuildStoreTemplateTabs();
     void applyActiveStoreTemplateUi();
     QString buildStorePageUrl(const AppInfo &app) const;

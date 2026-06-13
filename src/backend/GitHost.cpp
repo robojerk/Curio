@@ -71,7 +71,7 @@ QString GitHost::hostForKind(GitHostKind kind)
 
 QString GitHost::projectId(const ParsedGitRepo &repo)
 {
-    return QStringLiteral("%1:%2").arg(repo.providerId(), repo.repoSlug);
+    return QStringLiteral("%1:%2").arg(repo.providerId()).arg(repo.repoSlug);
 }
 
 QString GitHost::canonicalWebUrl(const ParsedGitRepo &repo)

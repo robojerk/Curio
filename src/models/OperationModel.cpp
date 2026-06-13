@@ -1,5 +1,9 @@
 #include "OperationModel.h"
 
+namespace {
+constexpr int kMaxOperations = 200;
+}
+
 OperationModel::OperationModel(QObject *parent)
     : QAbstractListModel(parent)
 {
@@ -33,7 +37,7 @@ QVariant OperationModel::data(const QModelIndex &index, int role) const
                     ? QStringLiteral("Failed")
                     : QStringLiteral("Pending");
         const QString detail = op.message.trimmed().isEmpty() ? QString() : QStringLiteral(" - %1").arg(op.message.trimmed());
-        return QStringLiteral("%1 %2 [%3]%4").arg(action, op.appId, status, detail);
+        return QStringLiteral("%1 %2 [%3]%4").arg(action).arg(op.appId).arg(status).arg(detail);
     }
 
     switch (role) {
@@ -49,9 +53,8 @@ QVariant OperationModel::data(const QModelIndex &index, int role) const
         return op.progress;
     case MessageRole:
         return op.message;
-    default:
-        return {};
     }
+    return {};
 }
 
 QHash<int, QByteArray> OperationModel::roleNames() const
@@ -68,7 +71,11 @@ QHash<int, QByteArray> OperationModel::roleNames() const
 
 void OperationModel::addOrUpdate(const Operation &op)
 {
-    // Simple approach: append every operation; later we could de-duplicate by appId/type.
+    if (m_operations.size() >= kMaxOperations) {
+        beginRemoveRows(QModelIndex(), 0, 0);
+        m_operations.removeFirst();
+        endRemoveRows();
+    }
     const int row = m_operations.size();
     beginInsertRows(QModelIndex(), row, row);
     m_operations.append(op);

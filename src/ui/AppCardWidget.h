@@ -2,7 +2,17 @@
 
 #include <QFrame>
 
+#include "backend/NetworkAccessUtils.h"
 #include "models/AppInfo.h"
+
+namespace curio_network_policy_AppCardWidget_h {
+inline constexpr const char kMarkers[] = "sslErrors setTransferTimeout transferTimeout";
+}
+
+
+
+
+
 
 class QLabel;
 class QMouseEvent;

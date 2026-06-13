@@ -371,10 +371,10 @@ QVector<AppInfo> FlatpakInstallationService::listAvailableRuntimeUpdates()
     return dedupeRuntimeUpdatesByRef(apps);
 }
 
-QVector<QPair<QString, QString>> FlatpakInstallationService::listRemotes()
+QVector<std::pair<QString, QString>> FlatpakInstallationService::listRemotes()
 {
     QMutexLocker lock(&m_mutex);
-    QVector<QPair<QString, QString>> remotes;
+    QVector<std::pair<QString, QString>> remotes;
     const FlatpakScope scopes[] = {FlatpakScope::System, FlatpakScope::User};
 
     for (FlatpakScope scope : scopes) {
@@ -409,7 +409,7 @@ QVector<QPair<QString, QString>> FlatpakInstallationService::listRemotes()
                 continue;
 
             g_autofree char *url = flatpak_remote_get_url(remote);
-            remotes.append(qMakePair(remoteName, url ? QString::fromUtf8(url) : QString()));
+            remotes.append(std::make_pair(remoteName, url ? QString::fromUtf8(url) : QString()));
         }
     }
     return remotes;

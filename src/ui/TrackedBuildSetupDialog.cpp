@@ -226,7 +226,7 @@ void TrackedBuildSetupDialog::applyInstalledAppMatches(const ParsedGitRepo &repo
         return;
 
     for (const AppInfo &app : matches) {
-        const QString label = app.name.isEmpty() ? app.id : QStringLiteral("%1 (%2)").arg(app.name, app.id);
+        const QString label = app.name.isEmpty() ? app.id : QStringLiteral("%1 (%2)").arg(app.name).arg(app.id);
         m_matchedAppCombo->addItem(label, app.id);
     }
 
@@ -284,7 +284,7 @@ void TrackedBuildSetupDialog::populateFromProject(const TrackedBuildProject &pro
 {
     m_project = project;
     if (m_repoLabel)
-        m_repoLabel->setText(QStringLiteral("%1 (%2)").arg(project.repoSlug, project.providerId));
+        m_repoLabel->setText(QStringLiteral("%1 (%2)").arg(project.repoSlug).arg(project.providerId));
     m_linkedAppIdEdit->setText(project.linkedAppId);
     m_includePrereleasesCheck->setChecked(project.includePrereleases);
     m_assetFilterRegexEdit->setText(trackedBuildEffectiveAssetFilterRegex(project));
@@ -397,7 +397,7 @@ bool TrackedBuildSetupDialog::validateFields(QString *errorMessage) const
         QRegularExpression rx(pattern);
         if (!rx.isValid()) {
             if (errorMessage)
-                *errorMessage = tr("Invalid %1: %2").arg(label, rx.errorString());
+                *errorMessage = tr("Invalid %1: %2").arg(label).arg(rx.errorString());
             return false;
         }
         return true;
@@ -427,7 +427,7 @@ void TrackedBuildSetupDialog::updatePreview()
     std::sort(sorted.begin(), sorted.end(), [](const TrackedBuildRelease &a, const TrackedBuildRelease &b) {
         return a.publishedAtIso > b.publishedAtIso;
     });
-    const int previewCount = qMin(5, sorted.size());
+    const int previewCount = (std::min)(5, static_cast<int>(sorted.size()));
     m_previewTable->setRowCount(previewCount);
     for (int i = 0; i < previewCount; ++i) {
         const TrackedBuildRelease &release = sorted.at(i);

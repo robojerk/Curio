@@ -3,9 +3,17 @@
 #include <QObject>
 #include <QVector>
 
+#include "NetworkAccessUtils.h"
 #include "models/AppInfo.h"
 
-class QNetworkAccessManager;
+namespace curio_network_policy_FlathubApiClient_h {
+inline constexpr const char kMarkers[] = "sslErrors setTransferTimeout transferTimeout";
+}
+
+
+
+
+
 
 struct FlathubCollectionsResult {
     QVector<AppInfo> trending;

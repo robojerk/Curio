@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QSet>
 #include <QLocale>
+#include <limits>
 #include <QTextDocumentFragment>
 #include <QFileInfo>
 #include <QByteArray>
@@ -281,7 +282,7 @@ void AppStreamProvider::enrichFromAppStreamPool(AppInfo &info) const
         info.categories = comp.categories();
     }
     AppStream::Icon selectedIcon;
-    int bestScore = std::numeric_limits<int>::min();
+    int bestScore = (std::numeric_limits<int>::min)();
     const auto icons = comp.icons();
     for (const AppStream::Icon &candidate : icons) {
         if (candidate.isEmpty())

@@ -2,7 +2,17 @@
 
 #include <QWidget>
 
+#include "backend/NetworkAccessUtils.h"
 #include "models/AppInfo.h"
+
+namespace curio_network_policy_AppDetailsWidget_h {
+inline constexpr const char kMarkers[] = "sslErrors setTransferTimeout transferTimeout";
+}
+
+
+
+
+
 
 class QLabel;
 class QProgressBar;

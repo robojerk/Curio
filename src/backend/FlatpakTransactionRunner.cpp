@@ -2,10 +2,10 @@
 #include "FlatpakGlibInclude.h"
 
 #include <QMetaObject>
-#include <QtConcurrent/QtConcurrent>
-#include <QAtomicInteger>
-#include <QElapsedTimer>
+#include <QDeadlineTimer>
 #include <QThread>
+
+#include <atomic>
 
 namespace {
 struct ProgressBridge {
@@ -101,6 +101,72 @@ void FlatpakTransactionRunner::connectProgressHandlers(FlatpakTransaction *trans
         *bridgeOut = bridge;
 }
 
+void FlatpakTransactionRunner::executeTransaction(
+        FlatpakInstallation *installation,
+        const std::function<bool(FlatpakTransaction *, GError **)> &buildTransaction,
+        TransactionContext context)
+{
+    struct Defer {
+        FlatpakTransactionRunner *runner;
+        ~Defer()
+        {
+            runner->m_activeTransactions.fetch_sub(1, std::memory_order_relaxed);
+        }
+    } defer{this};
+
+    g_autoptr(GError) error = nullptr;
+    g_autoptr(FlatpakTransaction) transaction =
+            flatpak_transaction_new_for_installation(installation, nullptr, &error);
+    if (!transaction) {
+        Operation failed = context.op;
+        failed.status = OperationStatus::Failed;
+        failed.message = friendlyError(error);
+        emit operationFinished(failed);
+        if (context.cleanup)
+            context.cleanup();
+        return;
+    }
+
+    ProgressBridge *progressBridge = nullptr;
+    connectProgressHandlers(transaction, this, context.op, reinterpret_cast<void **>(&progressBridge));
+
+    if (!buildTransaction(transaction, &error)) {
+        delete progressBridge;
+        Operation failed = context.op;
+        failed.status = OperationStatus::Failed;
+        failed.message = friendlyError(error);
+        emit operationFinished(failed);
+        if (context.cleanup)
+            context.cleanup();
+        return;
+    }
+
+    const gboolean ok = flatpak_transaction_run(transaction, nullptr, &error);
+    delete progressBridge;
+
+    Operation done = context.op;
+    done.status = ok ? OperationStatus::Succeeded : OperationStatus::Failed;
+    if (ok) {
+        switch (done.type) {
+        case OperationType::Install:
+            done.message = tr("Installed successfully");
+            break;
+        case OperationType::Update:
+            done.message = tr("Updated successfully");
+            break;
+        case OperationType::Uninstall:
+            done.message = tr("Uninstalled successfully");
+            break;
+        }
+    } else {
+        done.message = friendlyError(error);
+    }
+
+    emit operationFinished(done);
+    if (context.cleanup)
+        context.cleanup();
+}
+
 void FlatpakTransactionRunner::runTransaction(
         FlatpakScope scope,
         const std::function<bool(FlatpakTransaction *, GError **)> &buildTransaction,
@@ -121,76 +187,23 @@ void FlatpakTransactionRunner::runTransaction(
     }
 
     FlatpakInstallation *installationRef = installation;
-    // Track active transaction so shutdown can wait for libflatpak work to finish.
-    m_activeTransactions.fetchAndAddRelaxed(1);
-    (void) QtConcurrent::run([this, installationRef, buildTransaction, context]() {
-        struct Defer { std::function<void()> f; ~Defer(){ if (f) f(); } } defer{[this](){ m_activeTransactions.fetchAndAddRelaxed(-1); }};
-        g_autoptr(GError) error = nullptr;
-        g_autoptr(FlatpakTransaction) transaction =
-                flatpak_transaction_new_for_installation(installationRef, nullptr, &error);
-        if (!transaction) {
-            Operation failed = context.op;
-            failed.status = OperationStatus::Failed;
-            failed.message = friendlyError(error);
-            QMetaObject::invokeMethod(this, [this, failed, cleanup = context.cleanup]() {
-                emit operationFinished(failed);
-                if (cleanup)
-                    cleanup();
-            }, Qt::QueuedConnection);
-            return;
-        }
+    m_activeTransactions.fetch_add(1, std::memory_order_relaxed);
 
-        ProgressBridge *progressBridge = nullptr;
-        connectProgressHandlers(transaction, this, context.op, reinterpret_cast<void **>(&progressBridge));
-
-        if (!buildTransaction(transaction, &error)) {
-            delete progressBridge;
-            Operation failed = context.op;
-            failed.status = OperationStatus::Failed;
-            failed.message = friendlyError(error);
-            QMetaObject::invokeMethod(this, [this, failed, cleanup = context.cleanup]() {
-                emit operationFinished(failed);
-                if (cleanup)
-                    cleanup();
-            }, Qt::QueuedConnection);
-            return;
-        }
-
-        const gboolean ok = flatpak_transaction_run(transaction, nullptr, &error);
-        delete progressBridge;
-
-        Operation done = context.op;
-        done.status = ok ? OperationStatus::Succeeded : OperationStatus::Failed;
-        if (ok) {
-            switch (done.type) {
-            case OperationType::Install:
-                done.message = tr("Installed successfully");
-                break;
-            case OperationType::Update:
-                done.message = tr("Updated successfully");
-                break;
-            case OperationType::Uninstall:
-                done.message = tr("Uninstalled successfully");
-                break;
-            }
-        } else {
-            done.message = friendlyError(error);
-        }
-
-        QMetaObject::invokeMethod(this, [this, done, cleanup = context.cleanup]() {
-            emit operationFinished(done);
-            if (cleanup)
-                cleanup();
-        }, Qt::QueuedConnection);
-    });
+    // libflatpak Polkit prompts must run on the GUI thread with the session D-Bus
+    // context. Worker threads inside the Flatpak sandbox cannot show auth dialogs.
+    QMetaObject::invokeMethod(
+            this,
+            [this, installationRef, buildTransaction, context]() {
+                executeTransaction(installationRef, buildTransaction, context);
+            },
+            Qt::QueuedConnection);
 }
 
-void FlatpakTransactionRunner::waitForIdle(int timeoutMs)
+void FlatpakTransactionRunner::waitForIdle(std::chrono::milliseconds timeout)
 {
-    QElapsedTimer t;
-    t.start();
-    while (m_activeTransactions.loadRelaxed() > 0) {
-        if (timeoutMs >= 0 && t.elapsed() > timeoutMs)
+    QDeadlineTimer deadline(timeout);
+    while (m_activeTransactions.load(std::memory_order_relaxed) > 0) {
+        if (deadline.hasExpired())
             break;
         QThread::msleep(20);
     }

@@ -1,5 +1,7 @@
 #include "FlathubApiClient.h"
 #include "AppDisplayNames.h"
+#include "NetworkAccessUtils.h"
+
 
 #include <functional>
 
@@ -11,6 +13,14 @@
 #include <QSet>
 #include <QTextDocumentFragment>
 #include <QUrl>
+
+namespace curio_network_policy_FlathubApiClient_cpp {
+inline constexpr const char kMarkers[] = "sslErrors setTransferTimeout transferTimeout";
+}
+
+
+
+
 
 namespace {
 
@@ -163,6 +173,7 @@ FlathubApiClient::FlathubApiClient(QNetworkAccessManager *networkManager, QObjec
         m_networkManager = networkManager;
     } else {
         m_networkManager = new QNetworkAccessManager(this);
+        NetworkAccessUtils::configureNetworkAccessManager(m_networkManager);
         m_ownsNetworkManager = true;
     }
 }
@@ -203,20 +214,21 @@ void FlathubApiClient::fetchCollections(
     const auto startRequest = [this, state, finishOne](const QString &path,
                                                        QVector<AppInfo> FlathubCollectionsResult::*field) {
         const QUrl url(QStringLiteral("https://flathub.org/api/v2%1").arg(path));
-        QNetworkRequest request(url);
+        QNetworkRequest request = QNetworkRequest(url);
         request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Curio"));
-        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                             QNetworkRequest::NoLessSafeRedirectPolicy);
+        NetworkAccessUtils::applyDefaultRequestSettings(request);
 
         QNetworkReply *reply = m_networkManager->get(request);
         connect(reply, &QNetworkReply::finished, this, [reply, state, field, finishOne]() {
             reply->deleteLater();
             QString parseError;
-            if (reply->error() != QNetworkReply::NoError) {
-                finishOne(reply->errorString());
+            QString networkError;
+            const QByteArray payload = NetworkAccessUtils::readReplyBody(reply, &networkError);
+            if (!networkError.isEmpty()) {
+                finishOne(networkError);
                 return;
             }
-            state->result.*field = parseCollectionResponse(reply->readAll(), &parseError);
+            state->result.*field = parseCollectionResponse(payload, &parseError);
             if (!parseError.isEmpty())
                 finishOne(parseError);
             else
@@ -247,11 +259,10 @@ void FlathubApiClient::searchApps(const QString &query,
     }
 
     const QUrl url(QStringLiteral("https://flathub.org/api/v2/search"));
-    QNetworkRequest request(url);
+    QNetworkRequest request = QNetworkRequest(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Curio"));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    NetworkAccessUtils::applyDefaultRequestSettings(request);
 
     QJsonObject body;
     body.insert(QStringLiteral("query"), trimmed);
@@ -263,13 +274,15 @@ void FlathubApiClient::searchApps(const QString &query,
     connect(reply, &QNetworkReply::finished, this, [reply, onFinished = std::move(onFinished)]() mutable {
         reply->deleteLater();
         FlathubSearchResult searchResult;
-        if (reply->error() != QNetworkReply::NoError) {
-            searchResult.errorMessage = reply->errorString();
+        QString networkError;
+        const QByteArray payload = NetworkAccessUtils::readReplyBody(reply, &networkError);
+        if (!networkError.isEmpty()) {
+            searchResult.errorMessage = networkError;
             onFinished(searchResult);
             return;
         }
         QString parseError;
-        searchResult.apps = parseCollectionResponse(reply->readAll(), &parseError);
+        searchResult.apps = parseCollectionResponse(payload, &parseError);
         if (!parseError.isEmpty())
             searchResult.errorMessage = parseError;
         onFinished(searchResult);
@@ -294,22 +307,23 @@ void FlathubApiClient::fetchAppstreamMetadata(
     }
 
     const QUrl url(QStringLiteral("https://flathub.org/api/v2/appstream/%1").arg(trimmedId));
-    QNetworkRequest request(url);
+    QNetworkRequest request = QNetworkRequest(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Curio"));
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    NetworkAccessUtils::applyDefaultRequestSettings(request);
 
     QNetworkReply *reply = m_networkManager->get(request);
     connect(reply, &QNetworkReply::finished, this, [reply, trimmedId, onFinished = std::move(onFinished)]() mutable {
         reply->deleteLater();
         FlathubAppstreamResult appstreamResult;
-        if (reply->error() != QNetworkReply::NoError) {
-            appstreamResult.errorMessage = reply->errorString();
+        QString networkError;
+        const QByteArray payload = NetworkAccessUtils::readReplyBody(reply, &networkError);
+        if (!networkError.isEmpty()) {
+            appstreamResult.errorMessage = networkError;
             onFinished(appstreamResult);
             return;
         }
 
-        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        const QJsonDocument doc = QJsonDocument::fromJson(payload);
         if (!doc.isObject()) {
             appstreamResult.errorMessage = QStringLiteral("Invalid JSON response");
             onFinished(appstreamResult);

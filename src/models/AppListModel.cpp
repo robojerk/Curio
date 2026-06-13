@@ -38,9 +38,8 @@ QVariant AppListModel::data(const QModelIndex &index, int role) const
         return app.developerName;
     case SkeletonRole:
         return app.id.startsWith(QStringLiteral("__curio_skeleton_"));
-    default:
-        return {};
     }
+    return {};
 }
 
 QHash<int, QByteArray> AppListModel::roleNames() const
