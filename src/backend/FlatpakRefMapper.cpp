@@ -2,6 +2,7 @@
 #include "AppDisplayNames.h"
 #include "FlatpakRemoteCatalog.h"
 #include "FlatpakGlibInclude.h"
+#include "SandboxedFlatpakEnv.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -62,9 +63,9 @@ QString FlatpakRefMapper::installedIconName(const QString &appId)
         return QString();
 
     const QString desktopName = appId + QStringLiteral(".desktop");
+    const QString userFlatpak = SandboxedFlatpakEnv::userFlatpakDataDir();
     const QStringList exportAppDirs = {
-        QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-                + QStringLiteral("/flatpak/exports/share/applications"),
+        userFlatpak + QStringLiteral("/exports/share/applications"),
         QStringLiteral("/var/lib/flatpak/exports/share/applications"),
     };
     for (const QString &dir : exportAppDirs) {
@@ -84,9 +85,9 @@ QString FlatpakRefMapper::installedIconFilePath(const QString &appId)
         return QString();
 
     const QString iconName = installedIconName(appId);
+    const QString userFlatpak = SandboxedFlatpakEnv::userFlatpakDataDir();
     const QStringList exportIconRoots = {
-        QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-                + QStringLiteral("/flatpak/exports/share/icons"),
+        userFlatpak + QStringLiteral("/exports/share/icons"),
         QStringLiteral("/var/lib/flatpak/exports/share/icons"),
     };
     for (const QString &root : exportIconRoots) {
@@ -101,8 +102,7 @@ QString FlatpakRefMapper::installedIconFilePath(const QString &appId)
     }
 
     const QStringList appRoots = {
-        QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-                + QStringLiteral("/flatpak/app/") + appId,
+        userFlatpak + QStringLiteral("/app/") + appId,
         QStringLiteral("/var/lib/flatpak/app/") + appId,
     };
     for (const QString &appRoot : appRoots) {

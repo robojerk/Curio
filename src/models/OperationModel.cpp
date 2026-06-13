@@ -82,3 +82,12 @@ void OperationModel::addOrUpdate(const Operation &op)
     endInsertRows();
 }
 
+std::optional<Operation> OperationModel::operationForAppId(const QString &appId) const
+{
+    for (int i = m_operations.size() - 1; i >= 0; --i) {
+        if (m_operations[i].appId == appId)
+            return m_operations[i];
+    }
+    return std::nullopt;
+}
+

@@ -1356,8 +1356,10 @@ void MainWindow::rebuildExploreCards()
     if (sameApps && !apps.isEmpty() && columns == m_lastExploreColumnCount) {
         // Only refresh data in-place if the column count hasn't changed.
         for (int i = 0; i < grid->count(); ++i) {
-            if (auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget()))
+            if (auto *card = qobject_cast<AppCardWidget *>(grid->itemAt(i)->widget())) {
                 card->setApp(apps.value(i));
+                restoreOperationState(apps.value(i).id);
+            }
         }
         return;
     }
@@ -1415,6 +1417,7 @@ void MainWindow::rebuildExploreCards()
         });
         card->setApp(app);
         m_storeCardsByAppId.insert(app.id, card);
+        restoreOperationState(app.id);
         const int row = i / columns;
         const int col = i % columns;
         grid->addWidget(card, row, col, Qt::AlignTop | Qt::AlignHCenter);
@@ -1820,6 +1823,7 @@ void MainWindow::rebuildStoreCategoryCards()
         });
         card->setApp(app);
         m_storeCardsByAppId.insert(app.id, card);
+        restoreOperationState(app.id);
         const int row = i / columns;
         const int col = i % columns;
         grid->addWidget(card, row, col, Qt::AlignTop);
@@ -1861,9 +1865,10 @@ void MainWindow::rebuildInstalledRows()
         row->setApp(app);
         configureInstalledRowSource(row, app);
         vbox->addWidget(row);
-        if (!app.id.isEmpty())
+        if (!app.id.isEmpty()) {
             m_installedRowsByAppId.insert(app.id, row);
-
+            restoreOperationState(app.id);
+        }
         connect(row, &InstalledRowWidget::openDetailsRequested, this, [this, app]() {
             showDetailsForApp(app.id);
         });
@@ -2037,13 +2042,24 @@ void MainWindow::refreshStoreCardsInstalledUi()
                 continue;
             }
             card->setApp(info, false);
-            if (!info.id.isEmpty())
+            if (!info.id.isEmpty()) {
                 m_storeCardsByAppId.insert(info.id, card);
+                restoreOperationState(info.id);
+            }
         }
     };
 
     refreshGrid(m_exploreContainer);
     refreshGrid(m_storeCategoryCardsContainer);
+}
+
+void MainWindow::restoreOperationState(const QString &appId)
+{
+    if (std::optional<Operation> op = m_operationModel->operationForAppId(appId)) {
+        const bool finished = (op->status == OperationStatus::Succeeded || op->status == OperationStatus::Failed);
+        updateStoreCardOperation(*op, finished);
+        updateInstalledRowOperation(*op, finished);
+    }
 }
 
 void MainWindow::updateStoreCardOperation(const Operation &op, bool finished)

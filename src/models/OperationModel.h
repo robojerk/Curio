@@ -4,6 +4,7 @@
 #include <QVector>
 
 #include "Operation.h"
+#include <optional>
 
 class OperationModel : public QAbstractListModel
 {
@@ -25,6 +26,7 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     void addOrUpdate(const Operation &op);
+    std::optional<Operation> operationForAppId(const QString &appId) const;
 
 private:
     QVector<Operation> m_operations;

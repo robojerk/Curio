@@ -157,6 +157,7 @@ private:
     QVector<AppInfo> installedAppsSnapshot() const;
     void configureInstalledRowSource(InstalledRowWidget *row, const AppInfo &app);
     void requestUninstall(const QString &appId, const QString &displayName);
+    void restoreOperationState(const QString &appId);
     void refreshInstalledRowTrackedUpdate(InstalledRowWidget *row, const AppInfo &app);
     void patchInstalledTrackedBuildMetadata();
     void patchInstalledAppsMetadata(const QVector<AppInfo> &patches);

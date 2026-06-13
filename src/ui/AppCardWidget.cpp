@@ -278,13 +278,15 @@ void AppCardWidget::setInstallInProgress(bool inProgress, int progress)
         m_installButton->show();
         m_installButton->setEnabled(false);
         m_installButton->setText(QString());
-        if (progress >= 0) {
+        if (progress > 0) {
             m_installProgressTimer->stop();
             m_installProgress->setValue(std::clamp(progress, 0, 100));
         } else {
-            m_installProgressValue = 0;
-            m_installProgress->setValue(0);
-            m_installProgressTimer->start();
+            if (!m_installProgressTimer->isActive()) {
+                m_installProgressValue = 0;
+                m_installProgress->setValue(0);
+                m_installProgressTimer->start();
+            }
         }
         m_installProgress->show();
         layoutInstallProgress();

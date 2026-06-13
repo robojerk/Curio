@@ -96,6 +96,14 @@ QString hostFlatpakBinary()
     return cached;
 }
 
+QString userFlatpakDataDir()
+{
+    if (sandboxedBuildEnabled())
+        return QDir::homePath() + QStringLiteral("/.local/share/flatpak");
+    return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+            + QStringLiteral("/flatpak");
+}
+
 void repairExportedDesktopExecPaths()
 {
     if (!sandboxedBuildEnabled())
@@ -106,8 +114,8 @@ void repairExportedDesktopExecPaths()
     if (hostFlatpak == wrongFlatpak)
         return;
 
-    const QString exportDir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-            + QStringLiteral("/flatpak/exports/share/applications");
+    const QString exportDir = userFlatpakDataDir()
+            + QStringLiteral("/exports/share/applications");
     const QDir dir(exportDir);
     if (!dir.exists())
         return;

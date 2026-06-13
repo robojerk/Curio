@@ -1,14 +1,77 @@
 #include "FlatpakTransactionRunner.h"
 #include "FlatpakGlibInclude.h"
 
+#include <QDebug>
+#include <QElapsedTimer>
 #include <QMetaObject>
 #include <QDeadlineTimer>
 #include <QThread>
 #include <QtConcurrent/QtConcurrent>
 
+#ifdef CURIO_SANDBOXED_LIBFLATPAK
+#include <QRegularExpression>
+#endif
+
+#ifdef CURIO_SANDBOXED_LIBFLATPAK
+#include "SandboxedFlatpakEnv.h"
+#include <QProcess>
+#endif
+
+#include <algorithm>
 #include <atomic>
 
 namespace {
+
+bool flatpakDebugEnabled()
+{
+    return qEnvironmentVariableIsSet("CURIO_FLATPAK_DEBUG");
+}
+
+void logFlatpakDebug(const char *message, const Operation &op, const QString &detail = {})
+{
+    if (!flatpakDebugEnabled())
+        return;
+    QString line = QStringLiteral("[FlatpakTransaction] %1 appId=%2 type=%3")
+                           .arg(QString::fromUtf8(message), op.appId)
+                           .arg(static_cast<int>(op.type));
+    if (!detail.isEmpty())
+        line += QStringLiteral(" detail=") + detail;
+    qInfo().noquote() << line;
+}
+
+void logFlatpakFailure(const Operation &op, const QString &detail, const QString &outputTail = {})
+{
+    qWarning().noquote() << "[FlatpakTransaction] failed appId=" << op.appId
+                         << "type=" << static_cast<int>(op.type)
+                         << "message=" << (detail.isEmpty() ? op.message : detail);
+    if (!outputTail.isEmpty()) {
+        qWarning().noquote() << "[FlatpakTransaction] recent output:\n"
+                             << outputTail;
+    }
+}
+
+QString tailOutputLines(const QString &text, int maxLines = 20)
+{
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    if (lines.size() <= maxLines)
+        return lines.join(QLatin1Char('\n'));
+    return lines.mid(lines.size() - maxLines).join(QLatin1Char('\n'));
+}
+
+bool isInterestingHostFlatpakLine(const QString &line)
+{
+    if (line.isEmpty())
+        return false;
+    return line.contains(QStringLiteral("Installing"), Qt::CaseInsensitive)
+            || line.contains(QStringLiteral("Downloading"), Qt::CaseInsensitive)
+            || line.contains(QStringLiteral("Receiving"), Qt::CaseInsensitive)
+            || line.contains(QStringLiteral("Updating"), Qt::CaseInsensitive)
+            || line.contains(QStringLiteral("apply_extra"), Qt::CaseInsensitive)
+            || line.contains(QStringLiteral("error"), Qt::CaseInsensitive)
+            || line.contains(QStringLiteral("flatpak-"), Qt::CaseInsensitive)
+            || line.contains(QLatin1Char('%'));
+}
+
 struct ProgressBridge {
     FlatpakTransactionRunner *runner = nullptr;
     Operation op;
@@ -25,6 +88,12 @@ void onProgressChanged(FlatpakTransactionProgress *progress, ProgressBridge *bri
     if (status && status[0] != '\0')
         progressOp.message = QString::fromUtf8(status);
 
+    if (flatpakDebugEnabled() && status && status[0] != '\0') {
+        logFlatpakDebug("progress",
+                        bridge->op,
+                        QStringLiteral("%1% %2").arg(progressOp.progress).arg(progressOp.message));
+    }
+
     FlatpakTransactionRunner *runner = bridge->runner;
     QMetaObject::invokeMethod(
             bridge->runner,
@@ -38,7 +107,10 @@ void onNewOperation(FlatpakTransaction *transaction,
                     ProgressBridge *bridge)
 {
     Q_UNUSED(transaction);
-    Q_UNUSED(operation);
+    if (bridge && operation && flatpakDebugEnabled()) {
+        const char *ref = flatpak_transaction_operation_get_ref(operation);
+        logFlatpakDebug("new-operation", bridge->op, ref ? QString::fromUtf8(ref) : QString());
+    }
     if (!bridge || !progress)
         return;
 
@@ -54,6 +126,151 @@ QString buildInstallRef(FlatpakInstallation *installation, const QByteArray &app
         arch = "x86_64";
     return QStringLiteral("app/%1/%2/stable").arg(QString::fromUtf8(appId.constData()), QString::fromUtf8(arch));
 }
+
+#ifdef CURIO_SANDBOXED_LIBFLATPAK
+QString summarizeHostFlatpakOutput(const QByteArray &output)
+{
+    const QString text = QString::fromUtf8(output);
+    for (const QString &line : text.split(QLatin1Char('\n'))) {
+        const QString trimmed = line.trimmed();
+        if (trimmed.isEmpty())
+            continue;
+        if (trimmed.contains(QStringLiteral("error"), Qt::CaseInsensitive)
+                && !trimmed.contains(QStringLiteral("optional summary"), Qt::CaseInsensitive)
+                && !trimmed.contains(QStringLiteral("non-fatal"), Qt::CaseInsensitive)) {
+            return trimmed;
+        }
+    }
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    return lines.isEmpty() ? QString() : lines.last().trimmed();
+}
+
+void emitHostInstallProgress(FlatpakTransactionRunner *runner, Operation op, const QString &statusLine)
+{
+    if (statusLine.isEmpty())
+        return;
+    if (flatpakDebugEnabled() && isInterestingHostFlatpakLine(statusLine))
+        logFlatpakDebug("host-output", op, statusLine);
+
+    Operation progressOp = op;
+    progressOp.message = statusLine;
+    static const QRegularExpression percentPattern(QStringLiteral("(\\d{1,3})%"));
+    const QRegularExpressionMatch match = percentPattern.match(statusLine);
+    if (match.hasMatch())
+        progressOp.progress = std::clamp(match.captured(1).toInt(), 0, 100);
+    QMetaObject::invokeMethod(
+            runner,
+            [runner, progressOp]() { emit runner->operationProgress(progressOp); },
+            Qt::QueuedConnection);
+}
+
+void processHostFlatpakLine(FlatpakTransactionRunner *runner,
+                            const Operation &op,
+                            const QString &line)
+{
+    const QString trimmed = line.trimmed();
+    if (!isInterestingHostFlatpakLine(trimmed))
+        return;
+    emitHostInstallProgress(runner, op, trimmed);
+}
+
+void runHostFlatpakInstall(FlatpakTransactionRunner *runner,
+                           const Operation &op,
+                           const QString &remote,
+                           FlatpakScope scope)
+{
+    QElapsedTimer timer;
+    timer.start();
+
+    QStringList args = {QStringLiteral("install"), QStringLiteral("-y"), QStringLiteral("--noninteractive")};
+    if (flatpakDebugEnabled())
+        args << QStringLiteral("--verbose");
+    if (scope == FlatpakScope::User)
+        args << QStringLiteral("--user");
+    else
+        args << QStringLiteral("--system");
+    args << remote << op.appId;
+
+    logFlatpakDebug("host-install", op, args.join(QLatin1Char(' ')));
+
+    QProcess proc;
+    proc.setProcessChannelMode(QProcess::MergedChannels);
+    proc.start(SandboxedFlatpakEnv::flatpakExecutable(), args);
+    if (!proc.waitForStarted(30'000)) {
+        Operation failed = op;
+        failed.status = OperationStatus::Failed;
+        failed.message = FlatpakTransactionRunner::tr("Could not start host flatpak install.");
+        logFlatpakFailure(failed, failed.message);
+        QMetaObject::invokeMethod(
+                runner,
+                [runner, failed]() { emit runner->operationFinished(failed); },
+                Qt::QueuedConnection);
+        return;
+    }
+
+    QByteArray collected;
+    qsizetype processed = 0;
+    auto drainLines = [&]() {
+        while (processed < collected.size()) {
+            const qsizetype newline = collected.indexOf('\n', processed);
+            if (newline < 0)
+                break;
+            const QByteArray lineBytes = collected.mid(processed, newline - processed);
+            processed = newline + 1;
+            processHostFlatpakLine(runner, op, QString::fromUtf8(lineBytes));
+        }
+    };
+
+    while (proc.state() != QProcess::NotRunning) {
+        if (proc.waitForReadyRead(500))
+            collected += proc.readAll();
+        drainLines();
+    }
+    collected += proc.readAll();
+    proc.waitForFinished();
+    drainLines();
+    if (processed < collected.size())
+        processHostFlatpakLine(runner, op, QString::fromUtf8(collected.mid(processed)));
+
+    const QString fullOutput = QString::fromUtf8(collected);
+    const QString outputTail = tailOutputLines(fullOutput);
+    const qint64 elapsedMs = timer.elapsed();
+
+    Operation done = op;
+    if (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0) {
+        done.status = OperationStatus::Succeeded;
+        done.progress = 100;
+        done.message = FlatpakTransactionRunner::tr("Installed successfully");
+        logFlatpakDebug("host-install-finished",
+                        done,
+                        QStringLiteral("ok elapsedMs=%1 exitCode=0").arg(elapsedMs));
+        if (flatpakDebugEnabled() && !outputTail.isEmpty()) {
+            qInfo().noquote() << "[FlatpakTransaction] host output tail appId=" << done.appId
+                              << ":\n"
+                              << outputTail;
+        }
+    } else {
+        done.status = OperationStatus::Failed;
+        done.message = summarizeHostFlatpakOutput(collected);
+        if (done.message.isEmpty()) {
+            done.message = FlatpakTransactionRunner::tr("Host flatpak install failed (exit %1).")
+                                   .arg(proc.exitCode());
+        }
+        logFlatpakFailure(
+                done,
+                QStringLiteral("%1 elapsedMs=%2 exitCode=%3")
+                        .arg(done.message)
+                        .arg(elapsedMs)
+                        .arg(proc.exitCode()),
+                outputTail);
+    }
+
+    QMetaObject::invokeMethod(
+            runner,
+            [runner, done]() { emit runner->operationFinished(done); },
+            Qt::QueuedConnection);
+}
+#endif
 }
 
 FlatpakTransactionRunner::FlatpakTransactionRunner(FlatpakInstallationService *installations,
@@ -88,6 +305,13 @@ QString FlatpakTransactionRunner::friendlyError(GError *error)
             || message.contains(QStringLiteral("Not authorized"), Qt::CaseInsensitive)) {
         return FlatpakTransactionRunner::tr("Administrator authorization was cancelled or denied.");
     }
+    if (message.contains(QStringLiteral("apply_extra"), Qt::CaseInsensitive)
+            || message.contains(QStringLiteral("apply extra"), Qt::CaseInsensitive)
+            || message.contains(QStringLiteral("/proc/self/fd/"), Qt::CaseInsensitive)) {
+        return FlatpakTransactionRunner::tr(
+                "Install failed while unpacking extra app data (apply_extra). "
+                "Try: flatpak install flathub <app-id>, or run Curio with CURIO_FLATPAK_DEBUG=1.");
+    }
     return message;
 }
 
@@ -107,6 +331,9 @@ void FlatpakTransactionRunner::executeTransaction(
         const std::function<bool(FlatpakTransaction *, GError **)> &buildTransaction,
         TransactionContext context)
 {
+    QElapsedTimer timer;
+    timer.start();
+
     struct Defer {
         FlatpakTransactionRunner *runner;
         ~Defer()
@@ -122,6 +349,7 @@ void FlatpakTransactionRunner::executeTransaction(
         Operation failed = context.op;
         failed.status = OperationStatus::Failed;
         failed.message = friendlyError(error);
+        logFlatpakFailure(failed, failed.message);
         QMetaObject::invokeMethod(this, [this, failed, cleanup = context.cleanup]() {
             emit operationFinished(failed);
             if (cleanup)
@@ -138,6 +366,7 @@ void FlatpakTransactionRunner::executeTransaction(
         Operation failed = context.op;
         failed.status = OperationStatus::Failed;
         failed.message = friendlyError(error);
+        logFlatpakFailure(failed, failed.message);
         QMetaObject::invokeMethod(this, [this, failed, cleanup = context.cleanup]() {
             emit operationFinished(failed);
             if (cleanup)
@@ -151,7 +380,11 @@ void FlatpakTransactionRunner::executeTransaction(
 
     Operation done = context.op;
     done.status = ok ? OperationStatus::Succeeded : OperationStatus::Failed;
+    const qint64 elapsedMs = timer.elapsed();
     if (ok) {
+        logFlatpakDebug("finished",
+                        done,
+                        QStringLiteral("ok elapsedMs=%1").arg(elapsedMs));
         switch (done.type) {
         case OperationType::Install:
             done.message = tr("Installed successfully");
@@ -165,6 +398,10 @@ void FlatpakTransactionRunner::executeTransaction(
         }
     } else {
         done.message = friendlyError(error);
+        const QString glibMessage =
+                error && error->message ? QString::fromUtf8(error->message) : done.message;
+        logFlatpakFailure(done,
+                          QStringLiteral("%1 elapsedMs=%2").arg(glibMessage).arg(elapsedMs));
     }
 
     QMetaObject::invokeMethod(this, [this, done, cleanup = context.cleanup]() {
@@ -228,6 +465,25 @@ void FlatpakTransactionRunner::installFromRemote(const Operation &op,
             : nullptr;
     const QString ref = buildInstallRef(installation, appId);
     const QByteArray refBytes = ref.toUtf8();
+
+    logFlatpakDebug("install-start", op, ref);
+
+#ifdef CURIO_SANDBOXED_LIBFLATPAK
+    // Embedded libflatpak + host bwrap cannot run apply_extra (Spotify, etc.) because
+    // ro-bind sources use /proc/self/fd/N that do not survive flatpak-spawn --host.
+    m_activeTransactions.fetch_add(1, std::memory_order_relaxed);
+    (void) QtConcurrent::run([this, op, remote, scope]() {
+        struct Defer {
+            FlatpakTransactionRunner *runner;
+            ~Defer()
+            {
+                runner->m_activeTransactions.fetch_sub(1, std::memory_order_relaxed);
+            }
+        } defer{this};
+        runHostFlatpakInstall(this, op, remote, scope);
+    });
+    return;
+#endif
 
     runTransaction(scope,
                    [remoteBytes, refBytes](FlatpakTransaction *transaction, GError **error) {

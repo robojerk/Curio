@@ -275,7 +275,7 @@ void InstalledRowWidget::setUpdateInProgress(bool inProgress, const QString &sta
         m_updateButton->setVisible(true);
         m_updateButton->setEnabled(false);
         m_updateButton->setText(QString());
-        if (progress >= 0) {
+        if (progress > 0) {
             m_updateProgressTimer->stop();
             m_updateProgress->setValue(std::clamp(progress, 0, 100));
         } else {

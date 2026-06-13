@@ -288,8 +288,17 @@ AppDetailsWidget::AppDetailsWidget(FlatpakBackend *backend, QWidget *parent)
     connect(m_backend, &FlatpakBackend::operationFinished, this, [this](const Operation &op) {
         if (op.appId != m_info.id)
             return;
-        if (op.type == OperationType::Install)
+        if (op.type == OperationType::Install) {
             setInstallInProgress(false);
+            if (op.status == OperationStatus::Failed && m_originLabel) {
+                m_originLabel->setStyleSheet(
+                        QStringLiteral("color: rgba(232, 120, 120, 0.95);"));
+                m_originLabel->setText(op.message.isEmpty()
+                                               ? tr("Install failed.")
+                                               : op.message);
+                m_originLabel->setVisible(true);
+            }
+        }
         if (op.type == OperationType::Install && op.status == OperationStatus::Succeeded)
             m_info.installed = true;
         if (op.type == OperationType::Uninstall && op.status == OperationStatus::Succeeded)
@@ -770,13 +779,15 @@ void AppDetailsWidget::setInstallInProgress(bool inProgress, int progress)
         m_installButton->setVisible(true);
         m_installButton->setEnabled(false);
         m_installButton->setText(QString());
-        if (progress >= 0) {
+        if (progress > 0) {
             m_installProgressTimer->stop();
             m_installProgress->setValue(std::clamp(progress, 0, 100));
         } else {
-            m_installProgressValue = 0;
-            m_installProgress->setValue(0);
-            m_installProgressTimer->start();
+            if (!m_installProgressTimer->isActive()) {
+                m_installProgressValue = 0;
+                m_installProgress->setValue(0);
+                m_installProgressTimer->start();
+            }
         }
         m_installProgress->show();
         layoutInstallProgress();

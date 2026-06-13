@@ -3,6 +3,7 @@
 #include "FlatpakRefMapper.h"
 #include "FlatpakRemoteCatalog.h"
 #include "FlatpakGlibInclude.h"
+#include "SandboxedFlatpakEnv.h"
 
 #include <QDir>
 #include <QMutexLocker>
@@ -147,9 +148,10 @@ void FlatpakInstallationService::openInstallationPair(FlatpakScope scope,
 
 #ifdef CURIO_SANDBOXED_LIBFLATPAK
     if (scope == FlatpakScope::User) {
-        // Host ~/.local/share/flatpak is bind-mounted at $XDG_DATA_HOME/flatpak in the sandbox.
-        const QString userPath = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-                + QStringLiteral("/flatpak");
+        // Use the host user repo (~/.local/share/flatpak), not the per-app sandbox
+        // XDG_DATA_HOME path. Extra-data apps (e.g. Spotify) run apply_extra in bwrap
+        // and need runtimes from the real user installation.
+        const QString userPath = SandboxedFlatpakEnv::userFlatpakDataDir();
         g_autoptr(GFile) userInstall = g_file_new_for_path(userPath.toUtf8().constData());
         silent = flatpak_installation_new_for_path(userInstall, TRUE, nullptr, &error);
     } else {

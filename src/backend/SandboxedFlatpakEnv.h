@@ -14,6 +14,9 @@ QString flatpakExecutable();
 /** Host flatpak path for exported .desktop Exec lines (e.g. /usr/bin/flatpak). */
 QString hostFlatpakBinary();
 
+/** User-scope flatpak repo (host ~/.local/share/flatpak when sandboxed). */
+QString userFlatpakDataDir();
+
 /** Rewrite /app/bin/flatpak in user export .desktop files after sandboxed installs. */
 void repairExportedDesktopExecPaths();
 
