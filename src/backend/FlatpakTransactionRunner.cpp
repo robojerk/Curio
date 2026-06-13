@@ -4,6 +4,7 @@
 #include <QMetaObject>
 #include <QDeadlineTimer>
 #include <QThread>
+#include <QtConcurrent/QtConcurrent>
 
 #include <atomic>
 
@@ -121,9 +122,11 @@ void FlatpakTransactionRunner::executeTransaction(
         Operation failed = context.op;
         failed.status = OperationStatus::Failed;
         failed.message = friendlyError(error);
-        emit operationFinished(failed);
-        if (context.cleanup)
-            context.cleanup();
+        QMetaObject::invokeMethod(this, [this, failed, cleanup = context.cleanup]() {
+            emit operationFinished(failed);
+            if (cleanup)
+                cleanup();
+        }, Qt::QueuedConnection);
         return;
     }
 
@@ -135,9 +138,11 @@ void FlatpakTransactionRunner::executeTransaction(
         Operation failed = context.op;
         failed.status = OperationStatus::Failed;
         failed.message = friendlyError(error);
-        emit operationFinished(failed);
-        if (context.cleanup)
-            context.cleanup();
+        QMetaObject::invokeMethod(this, [this, failed, cleanup = context.cleanup]() {
+            emit operationFinished(failed);
+            if (cleanup)
+                cleanup();
+        }, Qt::QueuedConnection);
         return;
     }
 
@@ -162,9 +167,11 @@ void FlatpakTransactionRunner::executeTransaction(
         done.message = friendlyError(error);
     }
 
-    emit operationFinished(done);
-    if (context.cleanup)
-        context.cleanup();
+    QMetaObject::invokeMethod(this, [this, done, cleanup = context.cleanup]() {
+        emit operationFinished(done);
+        if (cleanup)
+            cleanup();
+    }, Qt::QueuedConnection);
 }
 
 void FlatpakTransactionRunner::runTransaction(
@@ -189,14 +196,11 @@ void FlatpakTransactionRunner::runTransaction(
     FlatpakInstallation *installationRef = installation;
     m_activeTransactions.fetch_add(1, std::memory_order_relaxed);
 
-    // libflatpak Polkit prompts must run on the GUI thread with the session D-Bus
-    // context. Worker threads inside the Flatpak sandbox cannot show auth dialogs.
-    QMetaObject::invokeMethod(
-            this,
-            [this, installationRef, buildTransaction, context]() {
-                executeTransaction(installationRef, buildTransaction, context);
-            },
-            Qt::QueuedConnection);
+    // Run on a worker thread: flatpak_transaction_run drives D-Bus I/O and must not
+    // block the Qt GUI thread (that deadlocks installs inside the Flatpak sandbox).
+    (void) QtConcurrent::run([this, installationRef, buildTransaction, context]() {
+        executeTransaction(installationRef, buildTransaction, context);
+    });
 }
 
 void FlatpakTransactionRunner::waitForIdle(std::chrono::milliseconds timeout)

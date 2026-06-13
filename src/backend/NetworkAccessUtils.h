@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+
 class QByteArray;
 class QNetworkAccessManager;
 class QNetworkReply;
@@ -10,7 +12,7 @@ class QUrl;
 
 namespace NetworkAccessUtils {
 
-constexpr int kDefaultTransferTimeoutMs = 60'000;
+inline constexpr auto kDefaultTransferTimeout = std::chrono::seconds(60);
 
 /** Linter markers: sslErrorsConfigured, transferTimeoutConfigured, setTransferTimeoutConfigured */
 enum class PolicyMarker : int {
@@ -23,11 +25,13 @@ inline constexpr const char kNetworkPolicyMarkers[] =
         "sslErrors setTransferTimeout transferTimeout";
 
 /** Connect sslErrors logging and set transferTimeout on a network manager. */
-void configureNetworkAccessManager(QNetworkAccessManager *manager,
-                                   int transferTimeoutMs = kDefaultTransferTimeoutMs);
+void configureNetworkAccessManager(
+        QNetworkAccessManager *manager,
+        std::chrono::milliseconds transferTimeout = kDefaultTransferTimeout);
 
-void applyDefaultRequestSettings(QNetworkRequest &request,
-                                 int transferTimeoutMs = kDefaultTransferTimeoutMs);
+void applyDefaultRequestSettings(
+        QNetworkRequest &request,
+        std::chrono::milliseconds transferTimeout = kDefaultTransferTimeout);
 
 QByteArray readReplyBody(QNetworkReply *reply, QString *errorOut = nullptr);
 

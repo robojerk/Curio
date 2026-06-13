@@ -33,7 +33,7 @@ QNetworkAccessManager *sharedIconNetwork()
 {
     static QNetworkAccessManager *nam = []() {
         auto *manager = new QNetworkAccessManager(qApp);
-        NetworkAccessUtils::configureNetworkAccessManager(manager, 15'000);
+        NetworkAccessUtils::configureNetworkAccessManager(manager, std::chrono::seconds(15));
         return manager;
     }();
     return nam;

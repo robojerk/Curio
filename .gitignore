@@ -2,4 +2,16 @@ build
 build-test/
 logs
 artifacts/
+# Flatpak build directories
+.flatpak-builder/
+build-dir/
+repo/
+*.flatpak
 
+# Local testing runtimes/bundles
+*.bundle
+*.swp
+*.swo
+
+# IDE / flatpak-node-generator specifics
+generated-sources.json

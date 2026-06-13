@@ -7,12 +7,22 @@
 
 namespace NetworkAccessUtils {
 
-void configureNetworkAccessManager(QNetworkAccessManager *manager, int transferTimeoutMs)
+namespace {
+
+int toMilliseconds(std::chrono::milliseconds duration)
+{
+    return static_cast<int>(duration / std::chrono::milliseconds{1});
+}
+
+} // namespace
+
+void configureNetworkAccessManager(QNetworkAccessManager *manager,
+                                   std::chrono::milliseconds transferTimeout)
 {
     if (!manager)
         return;
 
-    manager->setTransferTimeout(transferTimeoutMs);
+    manager->setTransferTimeout(toMilliseconds(transferTimeout));
     QObject::connect(manager, &QNetworkAccessManager::sslErrors, manager,
                      [](QNetworkReply *reply, const QList<QSslError> &errors) {
                          if (reply->error() == QNetworkReply::SslHandshakeFailedError) {
@@ -21,9 +31,10 @@ void configureNetworkAccessManager(QNetworkAccessManager *manager, int transferT
                      });
 }
 
-void applyDefaultRequestSettings(QNetworkRequest &request, int transferTimeoutMs)
+void applyDefaultRequestSettings(QNetworkRequest &request,
+                                 std::chrono::milliseconds transferTimeout)
 {
-    request.setTransferTimeout(transferTimeoutMs);
+    request.setTransferTimeout(toMilliseconds(transferTimeout));
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                          QNetworkRequest::NoLessSafeRedirectPolicy);
 }
@@ -38,9 +49,13 @@ QByteArray readReplyBody(QNetworkReply *reply, QString *errorOut)
     if (reply->error() != QNetworkReply::NoError) {
         if (errorOut)
             *errorOut = reply->errorString();
+        reply->deleteLater();
         return {};
     }
-    return reply->readAll();
+    Q_ASSERT(reply->error() == QNetworkReply::NoError);
+    const QByteArray body = reply->readAll();
+    reply->deleteLater();
+    return body;
 }
 
 } // namespace NetworkAccessUtils

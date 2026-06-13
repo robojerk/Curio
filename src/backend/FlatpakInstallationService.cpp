@@ -303,8 +303,14 @@ QVector<AppInfo> FlatpakInstallationService::listAvailableUpdates()
 {
     QMutexLocker lock(&m_mutex);
     QVector<AppInfo> apps;
+#ifdef CURIO_SANDBOXED_LIBFLATPAK
+    // System repo is read-only in the Curio Flatpak; update enumeration there
+    // tries to refresh remote metadata and stalls on Read-only file system.
+    apps += listAvailableUpdatesForScope(FlatpakScope::User);
+#else
     apps += listAvailableUpdatesForScope(FlatpakScope::System);
     apps += listAvailableUpdatesForScope(FlatpakScope::User);
+#endif
     return apps;
 }
 
@@ -360,14 +366,20 @@ QVector<AppInfo> FlatpakInstallationService::listAvailableRuntimeUpdates()
 {
     QMutexLocker lock(&m_mutex);
     QHash<QString, QString> newestBranches;
+#ifndef CURIO_SANDBOXED_LIBFLATPAK
     if (FlatpakInstallation *system = m_systemSilent)
         collectNewestInstalledRuntimeBranches(system, &newestBranches);
+#endif
     if (FlatpakInstallation *user = m_userSilent)
         collectNewestInstalledRuntimeBranches(user, &newestBranches);
 
     QVector<AppInfo> apps;
+#ifdef CURIO_SANDBOXED_LIBFLATPAK
+    apps += listAvailableRuntimeUpdatesForScope(FlatpakScope::User, newestBranches);
+#else
     apps += listAvailableRuntimeUpdatesForScope(FlatpakScope::System, newestBranches);
     apps += listAvailableRuntimeUpdatesForScope(FlatpakScope::User, newestBranches);
+#endif
     return dedupeRuntimeUpdatesByRef(apps);
 }
 
